@@ -185,9 +185,7 @@ async function getMyrealtripActivities(input: CandidateInput, statuses: Provider
 				stringValue(item.itemName) || stringValue(item.title) || '마이리얼트립 액티비티';
 			const price = numberValue(item.salePrice);
 			const outboundUrl =
-				stringValue(item.deepLink) ||
-				stringValue(item.productUrl) ||
-				`https://www.myrealtrip.com/offers/${gid}`;
+				stringValue(item.deepLink) || stringValue(item.productUrl) || myrealtripSearchUrl(title);
 
 			return {
 				id: gid,
@@ -1216,7 +1214,7 @@ function placeRowToGeo(row: Record<string, unknown>, fallbackTitle: string): Geo
 		stringValue(row.place_url) ||
 		stringValue(row.placeUrl) ||
 		stringValue(row.url) ||
-		kakaoSearchUrl(title);
+		kakaoMapUrl(title, lat, lng);
 	if (!title) return null;
 	return { title, lat, lng, address, mapUrl };
 }
@@ -1367,7 +1365,12 @@ function hhmmFromSession(session: RecommendationSession, separator = '') {
 }
 
 function kakaoSearchUrl(query: string) {
-	return `https://map.kakao.com/?q=${encodeURIComponent(query)}`;
+	return `https://map.kakao.com/link/search/${encodeURIComponent(query)}`;
+}
+
+function kakaoMapUrl(title: string, lat?: number, lng?: number) {
+	if (lat == null || lng == null) return kakaoSearchUrl(title);
+	return `https://map.kakao.com/link/map/${encodeURIComponent(title)},${lat},${lng}`;
 }
 
 function catchtableShopUrl(shopRef: string) {
@@ -1381,20 +1384,16 @@ function yogiyoSearchUrl(location?: string) {
 	return `https://www.yogiyo.co.kr/mobile/#/?search=${encodeURIComponent(query)}`;
 }
 
-function routeMapUrl(origin: RecommendationSession['location'], destination?: GeoCandidate) {
+function routeMapUrl(_origin: RecommendationSession['location'], destination?: GeoCandidate) {
 	if (!destination) return 'https://map.kakao.com';
-	const url = new URL('https://map.kakao.com/');
-	url.searchParams.set('sName', origin?.label ?? '현재 위치');
-	url.searchParams.set('eName', destination.title);
-	if (origin?.lat != null && origin.lng != null) {
-		url.searchParams.set('sY', String(origin.lat));
-		url.searchParams.set('sX', String(origin.lng));
-	}
 	if (destination.lat != null && destination.lng != null) {
-		url.searchParams.set('eY', String(destination.lat));
-		url.searchParams.set('eX', String(destination.lng));
+		return `https://map.kakao.com/link/to/${encodeURIComponent(destination.title)},${destination.lat},${destination.lng}`;
 	}
-	return url.toString();
+	return kakaoSearchUrl(destination.address ?? destination.title);
+}
+
+function myrealtripSearchUrl(query: string) {
+	return `https://www.myrealtrip.com/search?keyword=${encodeURIComponent(query)}`;
 }
 
 function transportLabel(mode: NonNullable<MobilityCandidate['mode']>) {

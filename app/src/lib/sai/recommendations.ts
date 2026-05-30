@@ -122,6 +122,10 @@ export function formatKrw(value: number) {
 	return `${new Intl.NumberFormat('ko-KR').format(value)}원`;
 }
 
+function myrealtripSearchUrl(query: string) {
+	return `https://www.myrealtrip.com/search?keyword=${encodeURIComponent(query)}`;
+}
+
 export function timeMeta(availableTime?: string) {
 	return timeOptions.find((option) => option.id === availableTime) ?? timeOptions[2];
 }
@@ -606,7 +610,7 @@ function friendRecommendations(
 					title: '도자기 또는 향수 원데이 클래스',
 					price: Math.round(firstCost * 0.62),
 					source: 'myrealtrip',
-					outboundUrl: 'https://www.myrealtrip.com/offers/example'
+					outboundUrl: myrealtripSearchUrl('도자기 향수 원데이 클래스')
 				},
 				{
 					slot: 'food',
@@ -746,7 +750,7 @@ function soloRecommendations(
 					title: '소규모 전시 또는 팝업',
 					price: secondCost,
 					source: 'myrealtrip',
-					outboundUrl: 'https://www.myrealtrip.com/offers/example'
+					outboundUrl: myrealtripSearchUrl('전시 팝업')
 				}
 			]
 		}),
@@ -770,7 +774,7 @@ function soloRecommendations(
 					title: '온라인 클래스 맛보기',
 					price: thirdCost,
 					source: 'sai',
-					outboundUrl: 'https://www.myrealtrip.com'
+					outboundUrl: myrealtripSearchUrl('온라인 클래스')
 				}
 			]
 		})
@@ -811,7 +815,7 @@ function coupleRecommendations(
 					title: '기획 전시 또는 미디어아트',
 					price: Math.round(firstCost * 0.42),
 					source: 'myrealtrip',
-					outboundUrl: 'https://www.myrealtrip.com/offers/example'
+					outboundUrl: myrealtripSearchUrl('전시 미디어아트')
 				},
 				{
 					slot: 'food',
@@ -873,7 +877,7 @@ function coupleRecommendations(
 					title: '향수 또는 반지 공방',
 					price: Math.round(thirdCost * 0.65),
 					source: 'myrealtrip',
-					outboundUrl: 'https://www.myrealtrip.com/offers/example'
+					outboundUrl: myrealtripSearchUrl('향수 반지 공방')
 				},
 				{
 					slot: 'food',
@@ -951,7 +955,7 @@ function familyRecommendations(
 					title: '가족 원데이 클래스',
 					price: Math.round(secondCost * 0.7),
 					source: 'myrealtrip',
-					outboundUrl: 'https://www.myrealtrip.com/offers/example'
+					outboundUrl: myrealtripSearchUrl('가족 원데이 클래스')
 				},
 				{
 					slot: 'food',
@@ -1083,7 +1087,7 @@ function groupRecommendations(
 					title: '단체 공방/쿠킹 클래스',
 					price: Math.round(thirdCost * 0.75),
 					source: 'myrealtrip',
-					outboundUrl: 'https://www.myrealtrip.com/offers/example'
+					outboundUrl: myrealtripSearchUrl('단체 공방 쿠킹 클래스')
 				},
 				{
 					slot: 'food',

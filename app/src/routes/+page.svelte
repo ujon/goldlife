@@ -95,6 +95,26 @@
 		end: string;
 		label: string;
 	};
+	type RecommendationItem = RecommendationCard['items'][number];
+	type DetailAction = {
+		key: string;
+		label: string;
+		url: string;
+		variant: 'primary' | 'secondary';
+	};
+	type DetailVisual = {
+		key: string;
+		title: string;
+		subtitle: string;
+		imageUrl: string;
+		href: string;
+		tone: number;
+	};
+	type DetailFact = {
+		key: string;
+		label: string;
+		value: string;
+	};
 
 	const defaultLocation: LocationValue = {
 		mode: 'default',
@@ -508,7 +528,7 @@
 		openOnboarding(onboardingIndex);
 	}
 
-	function logout() {
+	function clearClientSession() {
 		currentUserId = '';
 		profile = null;
 		screen = 'auth';
@@ -519,6 +539,21 @@
 		candidateBundle = null;
 		activeSessionId = '';
 		histories = [];
+	}
+
+	async function logout() {
+		if (busy) return;
+		busy = true;
+		const result = await serverJson<{ loggedOut: boolean }>('/api/auth/logout', {
+			method: 'POST',
+			body: null
+		});
+		busy = false;
+		if (result.type === 'error') {
+			authError = result.message;
+			return;
+		}
+		clearClientSession();
 	}
 
 	async function requestLocation() {
@@ -2041,49 +2076,228 @@
 		return '이동';
 	}
 
-	function itemPrimaryUrl(item: RecommendationCard['items'][number]) {
-		return item.reservationUrl ?? item.outboundUrl ?? item.mapUrl;
+	function itemPrimaryUrl(item: RecommendationItem) {
+		return reservationUrlForItem(item) ?? itemLocationUrl(item);
 	}
 
 	function cardReservationUrl(card: RecommendationCard) {
+		const fallbackQuery = card.items.find((item) => item.slot === 'activity')?.title ?? card.title;
 		return (
-			card.reservationUrl ??
-			card.items.find((item) => item.reservationUrl)?.reservationUrl ??
-			card.items.find((item) => item.slot === 'food')?.outboundUrl ??
-			card.items.find((item) => item.slot === 'activity')?.outboundUrl ??
-			card.outboundUrl
+			safeExternalUrl(card.reservationUrl, fallbackQuery) ??
+			uniqueRecommendationItems(card)
+				.map((item) => reservationUrlForItem(item))
+				.find((url): url is string => Boolean(url)) ??
+			safeExternalUrl(card.outboundUrl, fallbackQuery) ??
+			kakaoSearchUrl(fallbackQuery)
 		);
 	}
 
 	function cardRouteMapUrl(card: RecommendationCard) {
-		return (
-			card.routeMapUrl ??
-			card.items.find((item) => item.mapUrl)?.mapUrl ??
-			card.items.find((item) => item.address)?.outboundUrl ??
-			card.outboundUrl
-		);
-	}
-
-	function firstMappableItem(card: RecommendationCard) {
-		return card.items.find((item) => item.lat != null && item.lng != null);
+		const item = mappableItems(card)[0];
+		if (item) return kakaoRouteUrl(item.title, item.lat, item.lng);
+		return kakaoRouteDeepLink(card.routeMapUrl);
 	}
 
 	function routeMapEmbedUrl(card: RecommendationCard) {
-		const item = firstMappableItem(card);
-		if (item?.lat == null || item.lng == null) return '';
-		const lat = item.lat;
-		const lng = item.lng;
-		const delta = 0.01;
-		const bbox = `${lng - delta}%2C${lat - delta}%2C${lng + delta}%2C${lat + delta}`;
+		const places = mappableItems(card);
+		const marker = places[0];
+		if (!marker || marker.lat == null || marker.lng == null) return '';
+		const latValues = places.map((item) => item.lat as number);
+		const lngValues = places.map((item) => item.lng as number);
+		const minLat = Math.min(...latValues);
+		const maxLat = Math.max(...latValues);
+		const minLng = Math.min(...lngValues);
+		const maxLng = Math.max(...lngValues);
+		const latPadding = Math.max((maxLat - minLat) * 0.4, 0.006);
+		const lngPadding = Math.max((maxLng - minLng) * 0.4, 0.006);
+		const bbox = `${minLng - lngPadding}%2C${minLat - latPadding}%2C${maxLng + lngPadding}%2C${maxLat + latPadding}`;
+		const lat = marker.lat;
+		const lng = marker.lng;
 		return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lng}`;
 	}
 
-	function compactItemMeta(item: RecommendationCard['items'][number]) {
-		return [item.availabilityText, item.address].filter(Boolean).join(' · ');
+	function uniqueText(values: Array<string | undefined>) {
+		const seen: string[] = [];
+		return values.filter((value): value is string => {
+			const normalized = value?.replace(/\s/g, '').toLowerCase();
+			if (!value || !normalized || seen.includes(normalized)) return false;
+			seen.push(normalized);
+			return true;
+		});
 	}
 
-	function cardThumbnailUrl(card: RecommendationCard) {
-		return card.items.find((item) => item.thumbnailUrl)?.thumbnailUrl ?? '';
+	function compactItemMeta(item: RecommendationItem) {
+		return uniqueText([item.availabilityText, item.address]).join(' · ');
+	}
+
+	function uniqueRecommendationItems(card: RecommendationCard) {
+		const seen: string[] = [];
+		return card.items.filter((item) => {
+			const key = `${item.title}-${item.address ?? ''}`.replace(/\s/g, '').toLowerCase();
+			if (seen.includes(key)) return false;
+			seen.push(key);
+			return true;
+		});
+	}
+
+	function mappableItems(card: RecommendationCard) {
+		return uniqueRecommendationItems(card).filter((item) => item.lat != null && item.lng != null);
+	}
+
+	function detailVisuals(card: RecommendationCard): DetailVisual[] {
+		const visualItems = uniqueRecommendationItems(card)
+			.filter((item) => item.thumbnailUrl)
+			.slice(0, 4);
+		const sourceItems = visualItems.length
+			? visualItems
+			: uniqueRecommendationItems(card).slice(0, 4);
+		return sourceItems.map((item, index) => ({
+			key: `${item.title}-${item.thumbnailUrl ?? index}`,
+			title: item.title,
+			subtitle: sourceLabel(item.source),
+			imageUrl: item.thumbnailUrl ?? '',
+			href: itemPrimaryUrl(item) ?? cardReservationUrl(card),
+			tone: (index % 4) + 1
+		}));
+	}
+
+	function detailFacts(card: RecommendationCard): DetailFact[] {
+		return [
+			{ key: 'duration', label: '시간', value: card.estimatedDuration },
+			{ key: 'cost', label: '예상 비용', value: formatKrw(card.estimatedCost) },
+			{ key: 'per-person', label: '1인당', value: card.perPersonText.replace('1인당 약 ', '') },
+			{ key: 'weather', label: '날씨', value: weatherFitLabel(card) }
+		];
+	}
+
+	function detailBadgeList(card: RecommendationCard) {
+		return uniqueText([...card.badges, ...card.companionFit]).slice(0, 10);
+	}
+
+	function addUniqueAction(actions: DetailAction[], action: DetailAction | null) {
+		if (!action?.url) return;
+		const normalized = action.url.replace(/\/$/, '');
+		if (actions.some((item) => item.url.replace(/\/$/, '') === normalized)) return;
+		actions.push(action);
+	}
+
+	function cardDetailActions(card: RecommendationCard): DetailAction[] {
+		const actions: DetailAction[] = [];
+		addUniqueAction(actions, {
+			key: 'route',
+			label: '코스 경로',
+			url: cardRouteMapUrl(card),
+			variant: 'primary'
+		});
+		addUniqueAction(actions, {
+			key: 'reservation',
+			label: '예약/상세',
+			url: cardReservationUrl(card),
+			variant: 'secondary'
+		});
+		const calendarUrl = cardCalendarUrl(card);
+		addUniqueAction(
+			actions,
+			calendarUrl
+				? {
+						key: 'calendar',
+						label: '일정 추가',
+						url: calendarUrl,
+						variant: 'secondary'
+					}
+				: null
+		);
+		return actions;
+	}
+
+	function itemRouteUrl(item: RecommendationItem) {
+		return kakaoRouteUrl(item.title, item.lat, item.lng);
+	}
+
+	function itemDetailActions(item: RecommendationItem): DetailAction[] {
+		const actions: DetailAction[] = [];
+		const detailUrl = reservationUrlForItem(item);
+		addUniqueAction(actions, {
+			key: 'route',
+			label: '경로 보기',
+			url: itemRouteUrl(item),
+			variant: 'primary'
+		});
+		addUniqueAction(actions, {
+			key: 'map',
+			label: '위치 보기',
+			url: itemLocationUrl(item),
+			variant: 'secondary'
+		});
+		addUniqueAction(
+			actions,
+			detailUrl
+				? {
+						key: 'detail',
+						label: item.reservationUrl ? '예약/상세' : '상세 보기',
+						url: detailUrl,
+						variant: 'secondary'
+					}
+				: null
+		);
+		return actions;
+	}
+
+	function reservationUrlForItem(item: RecommendationItem) {
+		return (
+			safeExternalUrl(item.reservationUrl, item.title) ??
+			safeExternalUrl(item.outboundUrl, item.title)
+		);
+	}
+
+	function safeExternalUrl(url: string | undefined, fallbackQuery: string) {
+		if (!url) return undefined;
+		if (isInvalidMyrealtripUrl(url)) return myrealtripSearchUrl(fallbackQuery);
+		return url;
+	}
+
+	function isInvalidMyrealtripUrl(url: string) {
+		try {
+			const parsed = new URL(url);
+			if (!parsed.hostname.endsWith('myrealtrip.com')) return false;
+			return /^\/offers\/(?:example|myrealtrip-\d+)(?:\/|$)/.test(parsed.pathname);
+		} catch {
+			return false;
+		}
+	}
+
+	function myrealtripSearchUrl(query: string) {
+		return `https://www.myrealtrip.com/search?keyword=${encodeURIComponent(query)}`;
+	}
+
+	function itemLocationUrl(item: RecommendationItem) {
+		if (item.lat != null && item.lng != null) return kakaoMapUrl(item.title, item.lat, item.lng);
+		return kakaoSearchUrl(item.address ?? item.title);
+	}
+
+	function kakaoMapUrl(title: string, lat?: number, lng?: number) {
+		if (lat == null || lng == null) return kakaoSearchUrl(title);
+		return `https://map.kakao.com/link/map/${encodeURIComponent(title)},${lat},${lng}`;
+	}
+
+	function kakaoRouteUrl(title: string, lat?: number, lng?: number) {
+		if (lat == null || lng == null) return '';
+		return `https://map.kakao.com/link/to/${encodeURIComponent(title)},${lat},${lng}`;
+	}
+
+	function kakaoSearchUrl(query: string) {
+		return `https://map.kakao.com/link/search/${encodeURIComponent(query)}`;
+	}
+
+	function kakaoRouteDeepLink(url: string | undefined) {
+		if (!url) return '';
+		try {
+			const parsed = new URL(url);
+			if (parsed.hostname !== 'map.kakao.com') return '';
+			return parsed.pathname.startsWith('/link/to/') ? url : '';
+		} catch {
+			return '';
+		}
 	}
 
 	function calendarDateValue(value: string | undefined) {
@@ -2156,20 +2370,55 @@
 			<span>{resultTypeLabel(card)}</span>
 		</div>
 		<h2>{card.title}</h2>
+
+		<div class="detail-visual-grid">
+			{#each detailVisuals(card) as visual (visual.key)}
+				<a
+					class={`detail-visual-card tone-${visual.tone}`}
+					href={visual.href}
+					target="_blank"
+					rel="external noreferrer"
+					onclick={() => recordClick(card.id)}
+				>
+					{#if visual.imageUrl}
+						<img src={visual.imageUrl} alt={`${visual.title} 사진`} loading="lazy" />
+					{:else}
+						<span class="detail-visual-placeholder" aria-hidden="true"
+							>{visual.title.slice(0, 2)}</span
+						>
+					{/if}
+					<span class="detail-visual-caption">
+						<small>{visual.subtitle}</small>
+						<strong>{visual.title}</strong>
+					</span>
+				</a>
+			{/each}
+		</div>
+
 		<p class="why">{card.reason}</p>
 
-		{#if cardThumbnailUrl(card)}
-			<a
-				class="detail-thumbnail-link"
-				href={cardReservationUrl(card)}
-				target="_blank"
-				rel="external noreferrer"
-				onclick={() => recordClick(card.id)}
-			>
-				<img src={cardThumbnailUrl(card)} alt={`${card.title} 사진`} loading="lazy" />
-				<span>예약/상세 보기</span>
-			</a>
-		{/if}
+		<div class="detail-facts" aria-label="추천 요약">
+			{#each detailFacts(card) as fact (fact.key)}
+				<div>
+					<span>{fact.label}</span>
+					<strong>{fact.value}</strong>
+				</div>
+			{/each}
+		</div>
+
+		<div class="budget-note">{card.budgetText}</div>
+
+		<div class="execution-actions detail-primary-actions">
+			{#each cardDetailActions(card) as action (action.key)}
+				<a
+					class={`${action.variant} link-button`}
+					href={action.url}
+					target="_blank"
+					rel="external noreferrer"
+					onclick={() => recordClick(card.id)}>{action.label}</a
+				>
+			{/each}
+		</div>
 
 		<div class="route-map-panel">
 			{#if routeMapEmbedUrl(card)}
@@ -2182,7 +2431,7 @@
 			{:else}
 				<div class="route-map-fallback">
 					<strong>{transportModeLabel(card.routeTransport)}</strong>
-					<span>지도 앱에서 경로를 바로 확인할 수 있어.</span>
+					<span>각 장소 버튼에서 위치와 경로를 바로 확인할 수 있어.</span>
 				</div>
 			{/if}
 			<div class="route-summary-row">
@@ -2191,60 +2440,9 @@
 			</div>
 		</div>
 
-		<div class="execution-actions">
-			{#if cardCalendarUrl(card)}
-				<a
-					class="secondary link-button"
-					href={cardCalendarUrl(card)}
-					target="_blank"
-					rel="external noreferrer"
-					onclick={() => recordClick(card.id)}>일정 추가</a
-				>
-			{/if}
-			<a
-				class="primary link-button"
-				href={cardReservationUrl(card)}
-				target="_blank"
-				rel="external noreferrer"
-				onclick={() => recordClick(card.id)}>예약/상세</a
-			>
-			<a
-				class="secondary link-button"
-				href={cardRouteMapUrl(card)}
-				target="_blank"
-				rel="external noreferrer"
-				onclick={() => recordClick(card.id)}>지도 경로</a
-			>
-		</div>
-
-		<div class="plan-grid">
-			<div>
-				<span>시간</span>
-				<strong>{card.estimatedDuration}</strong>
-			</div>
-			<div>
-				<span>예상 비용</span>
-				<strong>{formatKrw(card.estimatedCost)}</strong>
-			</div>
-			<div>
-				<span>1인당</span>
-				<strong>{card.perPersonText.replace('1인당 약 ', '')}</strong>
-			</div>
-			<div>
-				<span>이동</span>
-				<strong>{card.routeSummary}</strong>
-			</div>
-			<div>
-				<span>날씨</span>
-				<strong>{weatherFitLabel(card)}</strong>
-			</div>
-		</div>
-
-		<div class="budget-note">{card.budgetText}</div>
-
 		<div class="course-items">
-			{#each card.items as item, itemIndex (`${item.slot}-${item.title}-${itemIndex}`)}
-				<div class="course-item" class:has-thumb={Boolean(item.thumbnailUrl)}>
+			{#each uniqueRecommendationItems(card) as item, itemIndex (`${item.slot}-${item.title}-${item.address ?? itemIndex}`)}
+				<div class="course-item has-thumb">
 					{#if item.thumbnailUrl}
 						<img
 							class="course-thumb"
@@ -2252,6 +2450,13 @@
 							alt={`${item.title} 사진`}
 							loading="lazy"
 						/>
+					{:else}
+						<div
+							class={`course-thumb course-thumb-fallback tone-${(itemIndex % 4) + 1}`}
+							aria-hidden="true"
+						>
+							{item.title.slice(0, 2)}
+						</div>
 					{/if}
 					<div class="course-item-main">
 						<span>{sourceLabel(item.source)}</span>
@@ -2260,35 +2465,27 @@
 							<small>{compactItemMeta(item)}</small>
 						{/if}
 					</div>
-					<em>{formatKrw(item.price)}</em>
+					{#if item.price > 0}
+						<em>{formatKrw(item.price)}</em>
+					{/if}
 					<div class="item-actions">
-						{#if itemPrimaryUrl(item)}
+						{#each itemDetailActions(item) as action (action.key)}
 							<a
-								href={itemPrimaryUrl(item)}
+								class={action.variant}
+								href={action.url}
 								target="_blank"
 								rel="external noreferrer"
-								onclick={() => recordClick(card.id)}>예약/상세</a
+								onclick={() => recordClick(card.id)}>{action.label}</a
 							>
-						{/if}
-						{#if item.mapUrl}
-							<a
-								href={item.mapUrl}
-								target="_blank"
-								rel="external noreferrer"
-								onclick={() => recordClick(card.id)}>지도</a
-							>
-						{/if}
+						{/each}
 					</div>
 				</div>
 			{/each}
 		</div>
 
 		<div class="badge-row">
-			{#each card.badges as badge (badge)}
+			{#each detailBadgeList(card) as badge (badge)}
 				<span>{badge}</span>
-			{/each}
-			{#each card.companionFit as fit (fit)}
-				<span class="companion">{fit}</span>
 			{/each}
 		</div>
 
@@ -3523,7 +3720,6 @@
 	}
 
 	.summary-metrics span,
-	.plan-grid span,
 	.course-items span,
 	.rec-topline span {
 		color: var(--faint);
@@ -3531,8 +3727,7 @@
 		font-weight: 900;
 	}
 
-	.summary-metrics strong,
-	.plan-grid strong {
+	.summary-metrics strong {
 		color: var(--ink);
 		font-size: 14px;
 		line-height: 1.35;
@@ -3640,7 +3835,7 @@
 	}
 
 	.recommendation-detail {
-		gap: 14px;
+		gap: 16px;
 		margin-bottom: 18px;
 	}
 
@@ -3654,39 +3849,134 @@
 		gap: 10px;
 	}
 
-	.detail-thumbnail-link {
+	.empty-detail {
+		align-content: center;
+		min-height: 240px;
+	}
+
+	.detail-visual-grid {
+		display: grid;
+		grid-template-columns: 1.25fr 0.75fr;
+		grid-auto-rows: 112px;
+		gap: 8px;
+	}
+
+	.detail-visual-card {
 		position: relative;
 		display: block;
 		overflow: hidden;
-		min-height: 156px;
-		border-radius: 16px;
+		border: 1px solid rgba(236, 231, 243, 0.9);
+		border-radius: 18px;
 		background: #f8f6fb;
 		color: #fff;
 		text-decoration: none;
 	}
 
-	.detail-thumbnail-link img {
+	.detail-visual-card:first-child {
+		grid-row: span 2;
+	}
+
+	.detail-visual-card img,
+	.detail-visual-placeholder {
 		width: 100%;
-		height: 180px;
-		display: block;
+		height: 100%;
+		display: grid;
+		place-items: center;
 		object-fit: cover;
 	}
 
-	.detail-thumbnail-link span {
-		position: absolute;
-		right: 12px;
-		bottom: 12px;
-		border-radius: 999px;
-		background: rgba(32, 28, 44, 0.72);
-		padding: 8px 11px;
-		font-size: 12px;
+	.detail-visual-placeholder,
+	.course-thumb-fallback {
+		background:
+			linear-gradient(
+				135deg,
+				rgba(255, 107, 94, 0.95),
+				rgba(180, 94, 232, 0.9) 55%,
+				rgba(91, 108, 255, 0.95)
+			),
+			#f8f6fb;
+		color: rgba(255, 255, 255, 0.92);
+		font-size: 18px;
 		font-weight: 900;
-		backdrop-filter: blur(8px);
 	}
 
-	.empty-detail {
+	.detail-visual-card.tone-2 .detail-visual-placeholder,
+	.course-thumb-fallback.tone-2 {
+		background: linear-gradient(135deg, #5b6cff, #6fcf97);
+	}
+
+	.detail-visual-card.tone-3 .detail-visual-placeholder,
+	.course-thumb-fallback.tone-3 {
+		background: linear-gradient(135deg, #ff6b5e, #f4b860);
+	}
+
+	.detail-visual-card.tone-4 .detail-visual-placeholder,
+	.course-thumb-fallback.tone-4 {
+		background: linear-gradient(135deg, #211c2b, #b45ee8);
+	}
+
+	.detail-visual-caption {
+		position: absolute;
+		right: 8px;
+		bottom: 8px;
+		left: 8px;
+		display: grid;
+		gap: 2px;
+		border-radius: 14px;
+		background: rgba(32, 28, 44, 0.68);
+		padding: 8px 10px;
+		backdrop-filter: blur(10px);
+	}
+
+	.detail-visual-caption small,
+	.detail-visual-caption strong {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.detail-visual-caption small {
+		color: rgba(255, 255, 255, 0.72);
+		font-size: 11px;
+		font-weight: 900;
+	}
+
+	.detail-visual-caption strong {
+		font-size: 13px;
+		font-weight: 900;
+	}
+
+	.detail-facts {
+		display: grid;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 7px;
+	}
+
+	.detail-facts div {
+		display: grid;
+		gap: 4px;
+		min-width: 0;
+		min-height: 62px;
 		align-content: center;
-		min-height: 240px;
+		border-radius: 14px;
+		background: #faf8fc;
+		padding: 9px;
+	}
+
+	.detail-facts span {
+		color: var(--muted);
+		font-size: 11px;
+		font-weight: 900;
+	}
+
+	.detail-facts strong {
+		overflow: hidden;
+		color: var(--ink);
+		font-size: 13px;
+		font-weight: 900;
+		line-height: 1.2;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.route-map-panel {
@@ -3758,21 +4048,6 @@
 		color: var(--ink2);
 	}
 
-	.plan-grid {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 8px;
-	}
-
-	.plan-grid div {
-		display: grid;
-		gap: 5px;
-		min-height: 72px;
-		border-radius: 14px;
-		background: #faf8fc;
-		padding: 10px;
-	}
-
 	.budget-note {
 		min-height: 36px;
 		display: flex;
@@ -3787,28 +4062,29 @@
 
 	.course-items {
 		display: grid;
-		gap: 8px;
+		gap: 10px;
 	}
 
 	.course-item {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		gap: 8px;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 10px;
 		align-items: start;
 		border: 1px solid var(--line);
-		border-radius: 14px;
+		border-radius: 16px;
+		background: #fff;
 		padding: 10px;
 		color: var(--ink);
 	}
 
 	.course-item.has-thumb {
-		grid-template-columns: 64px minmax(0, 1fr) auto;
+		grid-template-columns: 82px minmax(0, 1fr) auto;
 	}
 
 	.course-thumb {
-		width: 64px;
-		height: 64px;
-		border-radius: 12px;
+		width: 82px;
+		height: 82px;
+		border-radius: 14px;
 		object-fit: cover;
 		background: #f8f6fb;
 	}
@@ -3867,8 +4143,18 @@
 		text-decoration: none;
 	}
 
+	.item-actions a.primary {
+		border-color: transparent;
+		background: linear-gradient(90deg, var(--coral), var(--violet) 55%, var(--indigo));
+		color: #fff;
+	}
+
 	.execution-actions .link-button {
 		flex: 1 1 120px;
+	}
+
+	.detail-primary-actions .link-button {
+		min-height: 44px;
 	}
 
 	.badge-row,
@@ -3885,11 +4171,6 @@
 		padding: 6px 9px;
 		font-size: 12px;
 		font-weight: 900;
-	}
-
-	.badge-row span.companion {
-		background: rgba(97, 176, 126, 0.12);
-		color: #28764e;
 	}
 
 	.compact-badges {
