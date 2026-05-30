@@ -13,6 +13,12 @@ export type ActivityCandidate = {
 	price?: number;
 	source: 'myrealtrip' | 'genrank' | 'api_fuse' | 'sai';
 	outboundUrl?: string;
+	reservationUrl?: string;
+	mapUrl?: string;
+	address?: string;
+	lat?: number;
+	lng?: number;
+	availabilityText?: string;
 	tags: string[];
 	score?: number;
 };
@@ -23,6 +29,12 @@ export type RestaurantCandidate = {
 	price?: number;
 	source: 'api_fuse' | 'sai';
 	outboundUrl?: string;
+	reservationUrl?: string;
+	mapUrl?: string;
+	address?: string;
+	lat?: number;
+	lng?: number;
+	availabilityText?: string;
 	tags: string[];
 	reservationHint?: string;
 };
@@ -39,6 +51,9 @@ export type MobilityCandidate = {
 	label: string;
 	minutes?: number;
 	cost?: number;
+	mode?: 'walk' | 'transit' | 'car' | 'taxi' | 'shared';
+	routeMapUrl?: string;
+	detail?: string;
 	source: 'swing' | 'api_fuse' | 'sai';
 };
 

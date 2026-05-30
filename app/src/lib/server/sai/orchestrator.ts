@@ -4,6 +4,7 @@ import { composeRecommendations } from '$lib/sai/recommendations';
 import type {
 	RecommendationCard,
 	RecommendationHistoryItem,
+	RecommendationItem,
 	RecommendationSession,
 	UserProfile
 } from '$lib/sai/types';
@@ -119,6 +120,10 @@ async function requestOpenAICards(input: {
 									'MBTI는 추천 톤과 활동 성향 보정에만 사용하고 시간, 예산, 안전 조건보다 우선하지 않는다.',
 									'profile.onboardingFreeformAnswers는 사용자가 온보딩에서 말이나 문장으로 답한 원문 Q/A다. 선택지보다 구체적인 취향 신호로 보고 추천 후보, 이유, 배지에 반영한다.',
 									'아기 동반이면 부모 취향보다 아기 안전, 유모차/수유실/기저귀 교체/주차, 짧은 동선을 먼저 본다.',
+									'후보 API 결과는 실행 링크와 검증 신호로 우선 사용한다. MyRealTrip 상품/옵션, CatchTable 검색/예약가능성, KakaoMap 장소/경로, Swing 이동 후보를 가능한 한 반영한다.',
+									'예약 URL은 후보에 있는 outboundUrl 또는 reservationUrl만 사용하고 새 URL을 지어내지 않는다.',
+									'routeSummary에는 후보 mobility가 있으면 이동수단과 예상 시간을 포함한다.',
+									'availabilityText, mapUrl, 좌표가 있는 후보를 더 실행 가능하다고 본다.',
 									'카드의 첫 문장은 왜 이 추천이 맞는지여야 한다.',
 									'모든 가격은 원화 숫자이며 총 예산 기준으로 맞춘다.',
 									'outboundUrl은 후보에 있는 URL만 사용하고 없으면 https://map.kakao.com 을 사용한다.'
@@ -186,6 +191,7 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 	return cards.map((card, index) => {
 		const activity = bundle.activities[index % Math.max(bundle.activities.length, 1)];
 		const restaurant = bundle.restaurants[index % Math.max(bundle.restaurants.length, 1)];
+		const mobility = bundle.mobility[index % Math.max(bundle.mobility.length, 1)];
 		const items = card.items.map((item) => {
 			if (item.slot === 'activity' && activity) {
 				return {
@@ -193,7 +199,13 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 					title: activity.title,
 					price: activity.price ?? item.price,
 					source: activity.source,
-					outboundUrl: activity.outboundUrl ?? item.outboundUrl
+					outboundUrl: activity.outboundUrl ?? item.outboundUrl,
+					reservationUrl: activity.reservationUrl ?? activity.outboundUrl ?? item.reservationUrl,
+					mapUrl: activity.mapUrl ?? item.mapUrl,
+					address: activity.address ?? item.address,
+					lat: activity.lat ?? item.lat,
+					lng: activity.lng ?? item.lng,
+					availabilityText: activity.availabilityText ?? item.availabilityText
 				};
 			}
 
@@ -203,7 +215,14 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 					title: restaurant.title,
 					price: restaurant.price ?? item.price,
 					source: restaurant.source,
-					outboundUrl: restaurant.outboundUrl ?? item.outboundUrl
+					outboundUrl: restaurant.outboundUrl ?? item.outboundUrl,
+					reservationUrl:
+						restaurant.reservationUrl ?? restaurant.outboundUrl ?? item.reservationUrl,
+					mapUrl: restaurant.mapUrl ?? item.mapUrl,
+					address: restaurant.address ?? item.address,
+					lat: restaurant.lat ?? item.lat,
+					lng: restaurant.lng ?? item.lng,
+					availabilityText: restaurant.availabilityText ?? item.availabilityText
 				};
 			}
 
@@ -214,12 +233,22 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 		const badges = [
 			...new Set([...card.badges, ...externalTags, ...(trendTag ? [trendTag] : [])])
 		].slice(0, 8);
+		const reservationUrl =
+			items.find((item) => item.reservationUrl)?.reservationUrl ?? card.reservationUrl;
+		const routeMapUrl =
+			mobility?.routeMapUrl ?? items.find((item) => item.mapUrl)?.mapUrl ?? card.routeMapUrl;
 
 		return {
 			...card,
 			items,
 			badges,
-			weatherFit: bundle.weather.preferIndoor ? 'indoor' : card.weatherFit
+			weatherFit: bundle.weather.preferIndoor ? 'indoor' : card.weatherFit,
+			routeSummary: mobility?.label ?? card.routeSummary,
+			routeTransport: mobility?.mode ?? card.routeTransport,
+			routeMapUrl,
+			routeDetail: mobility?.detail ?? card.routeDetail,
+			reservationUrl,
+			outboundUrl: reservationUrl ?? routeMapUrl ?? card.outboundUrl
 		};
 	});
 }
@@ -271,15 +300,52 @@ function normalizeCard(
 	sessionId: string
 ): RecommendationCard {
 	const id = card.id || fallback.id;
+	const items = mergeItemExecutionData(
+		card.items?.length ? card.items : fallback.items,
+		fallback.items
+	);
+	const reservationUrl =
+		card.reservationUrl ??
+		fallback.reservationUrl ??
+		items.find((item) => item.reservationUrl)?.reservationUrl;
+	const routeMapUrl =
+		card.routeMapUrl ?? fallback.routeMapUrl ?? items.find((item) => item.mapUrl)?.mapUrl;
 	return {
 		...fallback,
 		...card,
 		id: id.startsWith(`${sessionId}:`) ? id : `${sessionId}:${id}`,
-		items: card.items?.length ? card.items : fallback.items,
+		items,
 		badges: card.badges?.length ? card.badges : fallback.badges,
 		companionFit: card.companionFit ?? fallback.companionFit,
-		outboundUrl: card.outboundUrl || fallback.outboundUrl
+		outboundUrl: card.outboundUrl || reservationUrl || routeMapUrl || fallback.outboundUrl,
+		routeTransport: card.routeTransport ?? fallback.routeTransport,
+		routeMapUrl,
+		routeDetail: card.routeDetail ?? fallback.routeDetail,
+		reservationUrl,
+		calendarUrl: card.calendarUrl ?? fallback.calendarUrl
 	};
+}
+
+function mergeItemExecutionData(items: RecommendationItem[], fallbackItems: RecommendationItem[]) {
+	return items.map((item, index) => {
+		const fallback =
+			fallbackItems.find((candidate, fallbackIndex) => {
+				return fallbackIndex === index || candidate.slot === item.slot;
+			}) ?? fallbackItems[index];
+		if (!fallback) return item;
+
+		return {
+			...fallback,
+			...item,
+			outboundUrl: item.outboundUrl || fallback.outboundUrl,
+			reservationUrl: item.reservationUrl ?? fallback.reservationUrl,
+			mapUrl: item.mapUrl ?? fallback.mapUrl,
+			address: item.address ?? fallback.address,
+			lat: item.lat ?? fallback.lat,
+			lng: item.lng ?? fallback.lng,
+			availabilityText: item.availabilityText ?? fallback.availabilityText
+		};
+	});
 }
 
 function extractOutputText(payload: OpenAIResponse) {

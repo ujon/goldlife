@@ -150,6 +150,12 @@ export type RecommendationItem = {
 	price: number;
 	source: 'myrealtrip' | 'api_fuse' | 'genrank' | 'sai';
 	outboundUrl: string;
+	reservationUrl?: string;
+	mapUrl?: string;
+	address?: string;
+	lat?: number;
+	lng?: number;
+	availabilityText?: string;
 };
 
 export type RecommendationCard = {
@@ -168,6 +174,11 @@ export type RecommendationCard = {
 	badges: string[];
 	items: RecommendationItem[];
 	outboundUrl: string;
+	routeTransport?: 'walk' | 'transit' | 'car' | 'taxi' | 'shared';
+	routeMapUrl?: string;
+	routeDetail?: string;
+	reservationUrl?: string;
+	calendarUrl?: string;
 };
 
 export type FeedbackRecord = {

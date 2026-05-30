@@ -97,6 +97,10 @@
 		end: string;
 		label: string;
 	};
+	type ResultInputSummaryItem = {
+		label: string;
+		value: string;
+	};
 
 	const defaultLocation: LocationValue = {
 		mode: 'default',
@@ -267,6 +271,7 @@
 	let dynamicFollowups = $state<FollowupQuestion[]>([]);
 	let followupSource = $state<'exaone' | 'openai' | 'fallback'>('fallback');
 	let recommendations = $state<RecommendationCard[]>([]);
+	let selectedRecommendationId = $state('');
 	let candidateBundle = $state<CandidateBundle | null>(null);
 	let compositionSource = $state<'openai' | 'fallback'>('fallback');
 	let integrationLogs = $state<IntegrationLogEntry[]>([]);
@@ -339,6 +344,7 @@
 	let timeRangeSummary = $derived(
 		timeRangeText(session.startDateTime ?? '', session.endDateTime ?? '')
 	);
+	let resultInputSummary = $derived(buildResultInputSummary(session));
 	let fallbackFollowupQuestions = $derived(profile ? buildFollowupQuestions(session, profile) : []);
 	let followupQuestions = $derived(
 		dynamicFollowups.length ? dynamicFollowups : fallbackFollowupQuestions
@@ -980,6 +986,7 @@
 		dynamicFollowups = [];
 		followupSource = 'fallback';
 		recommendations = [];
+		selectedRecommendationId = '';
 		candidateBundle = null;
 		compositionSource = 'fallback';
 		resetIntegrationLogs();
@@ -1186,12 +1193,24 @@
 	}
 
 	function continueFollowup() {
-		if (!currentFollowup) return;
+		if (!currentFollowup) {
+			skipFollowups();
+			return;
+		}
 		const value = followupAnswerInput.trim()
 			? followupAnswerValue(currentFollowup, followupAnswerInput)
 			: '';
-		if (!value) return;
+		if (!value) {
+			skipFollowups();
+			return;
+		}
 		answerFollowup(currentFollowup, value);
+	}
+
+	function skipFollowups() {
+		followupAnswerInput = '';
+		clearRecommendationSpeech();
+		void generateRecommendations();
 	}
 
 	async function generateRecommendations() {
@@ -1207,6 +1226,7 @@
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		const cards = scopeCardsToSession(composed.cards, session.id);
 		recommendations = cards;
+		selectedRecommendationId = '';
 		activeSessionId = session.id;
 		feedbackDraft = {};
 		saveHistory(cards);
@@ -1283,6 +1303,7 @@
 		return cards.map((card, index) => {
 			const activity = bundle.activities[index % Math.max(bundle.activities.length, 1)];
 			const restaurant = bundle.restaurants[index % Math.max(bundle.restaurants.length, 1)];
+			const mobility = bundle.mobility[index % Math.max(bundle.mobility.length, 1)];
 			const items = card.items.map((item) => {
 				if (item.slot === 'activity' && activity) {
 					return {
@@ -1290,7 +1311,13 @@
 						title: activity.title,
 						price: activity.price ?? item.price,
 						source: activity.source,
-						outboundUrl: activity.outboundUrl ?? item.outboundUrl
+						outboundUrl: activity.outboundUrl ?? item.outboundUrl,
+						reservationUrl: activity.reservationUrl ?? activity.outboundUrl ?? item.reservationUrl,
+						mapUrl: activity.mapUrl ?? item.mapUrl,
+						address: activity.address ?? item.address,
+						lat: activity.lat ?? item.lat,
+						lng: activity.lng ?? item.lng,
+						availabilityText: activity.availabilityText ?? item.availabilityText
 					};
 				}
 
@@ -1300,7 +1327,14 @@
 						title: restaurant.title,
 						price: restaurant.price ?? item.price,
 						source: restaurant.source,
-						outboundUrl: restaurant.outboundUrl ?? item.outboundUrl
+						outboundUrl: restaurant.outboundUrl ?? item.outboundUrl,
+						reservationUrl:
+							restaurant.reservationUrl ?? restaurant.outboundUrl ?? item.reservationUrl,
+						mapUrl: restaurant.mapUrl ?? item.mapUrl,
+						address: restaurant.address ?? item.address,
+						lat: restaurant.lat ?? item.lat,
+						lng: restaurant.lng ?? item.lng,
+						availabilityText: restaurant.availabilityText ?? item.availabilityText
 					};
 				}
 
@@ -1311,12 +1345,22 @@
 			const badges = [
 				...new Set([...card.badges, ...externalTags, ...(trendTag ? [trendTag] : [])])
 			].slice(0, 8);
+			const reservationUrl =
+				items.find((item) => item.reservationUrl)?.reservationUrl ?? card.reservationUrl;
+			const routeMapUrl =
+				mobility?.routeMapUrl ?? items.find((item) => item.mapUrl)?.mapUrl ?? card.routeMapUrl;
 
 			return {
 				...card,
 				items,
 				badges,
-				weatherFit: bundle.weather.preferIndoor ? 'indoor' : card.weatherFit
+				weatherFit: bundle.weather.preferIndoor ? 'indoor' : card.weatherFit,
+				routeSummary: mobility?.label ?? card.routeSummary,
+				routeTransport: mobility?.mode ?? card.routeTransport,
+				routeMapUrl,
+				routeDetail: mobility?.detail ?? card.routeDetail,
+				reservationUrl,
+				outboundUrl: reservationUrl ?? routeMapUrl ?? card.outboundUrl
 			};
 		});
 	}
@@ -1337,6 +1381,7 @@
 	function loadHistory(item: RecommendationHistoryItem) {
 		session = jsonCopy(item.session);
 		recommendations = jsonCopy(item.cards);
+		selectedRecommendationId = '';
 		activeSessionId = item.session.id;
 		feedbackDraft = Object.fromEntries(
 			item.feedback.map((feedback) => [
@@ -1348,6 +1393,10 @@
 			])
 		);
 		screen = 'results';
+	}
+
+	function selectRecommendation(cardId: string) {
+		selectedRecommendationId = selectedRecommendationId === cardId ? '' : cardId;
 	}
 
 	function setFeedback(cardId: string, sentiment: 'like' | 'dislike') {
@@ -1567,6 +1616,34 @@
 		return `${formatTimeRangeLabel(start, end)} · 약 ${Math.round(minutes / 60)}시간`;
 	}
 
+	function durationRangeLabel(minutes: number) {
+		const hours = Math.floor(minutes / 60);
+		const restMinutes = minutes % 60;
+		if (hours && restMinutes) return `${hours}시간 ${restMinutes}분`;
+		if (hours) return `${hours}시간`;
+		return `${restMinutes}분`;
+	}
+
+	function buildResultInputSummary(targetSession: RecommendationSession): ResultInputSummaryItem[] {
+		const timeText =
+			timeRangeText(targetSession.startDateTime ?? '', targetSession.endDateTime ?? '') ||
+			targetSession.customTime ||
+			(targetSession.availableTime ? timeMeta(targetSession.availableTime).label : '');
+		const extraContext = targetSession.dynamicAnswers.extra_context;
+		const items: ResultInputSummaryItem[] = [
+			{ label: '구성', value: situationLabel(targetSession.situation) },
+			{ label: '시간', value: timeText },
+			{
+				label: '예산',
+				value: targetSession.budgetTotal ? formatKrw(targetSession.budgetTotal) : ''
+			},
+			{ label: '위치', value: targetSession.location?.label ?? defaultLocation.label },
+			{ label: '요청', value: typeof extraContext === 'string' ? extraContext : '' }
+		];
+
+		return items.filter((item) => item.value.trim());
+	}
+
 	function applyTimeRange(range: ParsedTimeRange) {
 		session.startDateTime = range.start;
 		session.endDateTime = range.end;
@@ -1655,8 +1732,47 @@
 		};
 	}
 
+	function parseDurationFromNow(text: string): ParsedTimeRange | null {
+		if (/\d+\s*시(?!간)|부터|까지/.test(text)) return null;
+		const normalized = text.replace(/\s/g, '');
+		const decimalMatch = normalized.match(/(\d+(?:[.,]\d+)?)시간/);
+		const durationMatch =
+			decimalMatch ??
+			normalized.match(
+				/(열두|열둘|열한|열하나|열|십|아홉|여덟|일곱|여섯|다섯|네|넷|세|셋|두|둘|한|하나|일|이|삼|사|오|육|칠|팔|구|몇|\d{1,2})시간/
+			);
+		if (!durationMatch) return null;
+
+		const hourText = durationMatch[1] ?? '';
+		const hours =
+			hourText === '몇'
+				? 3
+				: decimalMatch
+					? Number(hourText.replace(',', '.'))
+					: parseKoreanHour(hourText);
+		if (!Number.isFinite(hours) || hours <= 0) return null;
+		const minuteMatch = normalized.match(/([0-5]?\d)분/);
+		const extraMinutes = minuteMatch?.[1]
+			? Number(minuteMatch[1])
+			: decimalMatch
+				? 0
+				: /반/.test(normalized)
+					? 30
+					: 0;
+		const minutes = Math.round(hours * 60) + extraMinutes;
+		const start = currentDateTime();
+		const end = new Date(start.getTime() + minutes * MINUTE_MS);
+
+		return {
+			start: toDatetimeLocalValue(start),
+			end: toDatetimeLocalValue(end),
+			label: `${formatTimeRangeLabel(start, end)} · ${durationRangeLabel(minutes)}`
+		};
+	}
+
 	function applyTimeTranscript(text: string) {
-		const parsedRange = parseSpokenTimeRange(text) ?? parseFlexibleDayRange(text);
+		const parsedRange =
+			parseSpokenTimeRange(text) ?? parseFlexibleDayRange(text) ?? parseDurationFromNow(text);
 		if (parsedRange) {
 			applyTimeRange(parsedRange);
 			customTimeInput = text;
@@ -2023,6 +2139,85 @@
 		if (card.weatherFit === 'outdoor') return '야외 적합';
 		return '날씨 무난';
 	}
+
+	function transportModeLabel(mode?: RecommendationCard['routeTransport']) {
+		if (mode === 'walk') return '도보';
+		if (mode === 'car') return '자동차';
+		if (mode === 'taxi') return '택시';
+		if (mode === 'shared') return '공유 모빌리티';
+		if (mode === 'transit') return '대중교통';
+		return '이동';
+	}
+
+	function itemPrimaryUrl(item: RecommendationCard['items'][number]) {
+		return item.reservationUrl ?? item.outboundUrl ?? item.mapUrl;
+	}
+
+	function cardReservationUrl(card: RecommendationCard) {
+		return (
+			card.reservationUrl ??
+			card.items.find((item) => item.reservationUrl)?.reservationUrl ??
+			card.items.find((item) => item.slot === 'food')?.outboundUrl ??
+			card.items.find((item) => item.slot === 'activity')?.outboundUrl ??
+			card.outboundUrl
+		);
+	}
+
+	function cardRouteMapUrl(card: RecommendationCard) {
+		return (
+			card.routeMapUrl ??
+			card.items.find((item) => item.mapUrl)?.mapUrl ??
+			card.items.find((item) => item.address)?.outboundUrl ??
+			card.outboundUrl
+		);
+	}
+
+	function firstMappableItem(card: RecommendationCard) {
+		return card.items.find((item) => item.lat != null && item.lng != null);
+	}
+
+	function routeMapEmbedUrl(card: RecommendationCard) {
+		const item = firstMappableItem(card);
+		if (item?.lat == null || item.lng == null) return '';
+		const lat = item.lat;
+		const lng = item.lng;
+		const delta = 0.01;
+		const bbox = `${lng - delta}%2C${lat - delta}%2C${lng + delta}%2C${lat + delta}`;
+		return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lng}`;
+	}
+
+	function compactItemMeta(item: RecommendationCard['items'][number]) {
+		return [item.availabilityText, item.address].filter(Boolean).join(' · ');
+	}
+
+	function calendarDateValue(value: string | undefined) {
+		const date = parseDatetimeLocalValue(value ?? '');
+		if (!date) return '';
+		return date
+			.toISOString()
+			.replace(/[-:]/g, '')
+			.replace(/\.\d{3}/, '');
+	}
+
+	function cardCalendarUrl(card: RecommendationCard) {
+		if (card.calendarUrl) return card.calendarUrl;
+		const start = calendarDateValue(session.startDateTime);
+		const end = calendarDateValue(session.endDateTime);
+		if (!start || !end) return '';
+		const locationItem = card.items.find((item) => item.address) ?? card.items[0];
+		const url = new URL('https://calendar.google.com/calendar/render');
+		url.searchParams.set('action', 'TEMPLATE');
+		url.searchParams.set('text', card.title);
+		url.searchParams.set('dates', `${start}/${end}`);
+		url.searchParams.set(
+			'details',
+			[card.reason, card.routeDetail ?? card.routeSummary, ...card.items.map((item) => item.title)]
+				.filter(Boolean)
+				.join('\n')
+		);
+		url.searchParams.set('location', locationItem?.address ?? locationItem?.title ?? '');
+		return url.toString();
+	}
 </script>
 
 <svelte:head>
@@ -2056,6 +2251,157 @@
 			{recommendationVoiceCaption(target, '나를 누르면 말로 답할 수 있어. 아래에 직접 적어도 돼.')}
 		</p>
 	</div>
+{/snippet}
+
+{#snippet recommendationDetail(card: RecommendationCard)}
+	<article class="rec-card recommendation-detail inline-detail" aria-live="polite">
+		<div class="rec-topline">
+			<span class="label-chip">상세 계획</span>
+			<span>{resultTypeLabel(card)}</span>
+		</div>
+		<h2>{card.title}</h2>
+		<p class="why">{card.reason}</p>
+
+		<div class="route-map-panel">
+			{#if routeMapEmbedUrl(card)}
+				<iframe
+					class="route-map-frame"
+					title={`${card.title} 지도`}
+					src={routeMapEmbedUrl(card)}
+					loading="lazy"
+				></iframe>
+			{:else}
+				<div class="route-map-fallback">
+					<strong>{transportModeLabel(card.routeTransport)}</strong>
+					<span>지도 앱에서 경로를 바로 확인할 수 있어.</span>
+				</div>
+			{/if}
+			<div class="route-summary-row">
+				<span>{transportModeLabel(card.routeTransport)}</span>
+				<strong>{card.routeDetail ?? card.routeSummary}</strong>
+			</div>
+		</div>
+
+		<div class="execution-actions">
+			{#if cardCalendarUrl(card)}
+				<a
+					class="secondary link-button"
+					href={cardCalendarUrl(card)}
+					target="_blank"
+					rel="external noreferrer"
+					onclick={() => recordClick(card.id)}>일정 추가</a
+				>
+			{/if}
+			<a
+				class="primary link-button"
+				href={cardReservationUrl(card)}
+				target="_blank"
+				rel="external noreferrer"
+				onclick={() => recordClick(card.id)}>예약/상세</a
+			>
+			<a
+				class="secondary link-button"
+				href={cardRouteMapUrl(card)}
+				target="_blank"
+				rel="external noreferrer"
+				onclick={() => recordClick(card.id)}>지도 경로</a
+			>
+		</div>
+
+		<div class="plan-grid">
+			<div>
+				<span>시간</span>
+				<strong>{card.estimatedDuration}</strong>
+			</div>
+			<div>
+				<span>예상 비용</span>
+				<strong>{formatKrw(card.estimatedCost)}</strong>
+			</div>
+			<div>
+				<span>1인당</span>
+				<strong>{card.perPersonText.replace('1인당 약 ', '')}</strong>
+			</div>
+			<div>
+				<span>이동</span>
+				<strong>{card.routeSummary}</strong>
+			</div>
+			<div>
+				<span>날씨</span>
+				<strong>{weatherFitLabel(card)}</strong>
+			</div>
+		</div>
+
+		<div class="budget-note">{card.budgetText}</div>
+
+		<div class="course-items">
+			{#each card.items as item, itemIndex (`${item.slot}-${item.title}-${itemIndex}`)}
+				<div class="course-item">
+					<div class="course-item-main">
+						<span>{sourceLabel(item.source)}</span>
+						<strong>{item.title}</strong>
+						{#if compactItemMeta(item)}
+							<small>{compactItemMeta(item)}</small>
+						{/if}
+					</div>
+					<em>{formatKrw(item.price)}</em>
+					<div class="item-actions">
+						{#if itemPrimaryUrl(item)}
+							<a
+								href={itemPrimaryUrl(item)}
+								target="_blank"
+								rel="external noreferrer"
+								onclick={() => recordClick(card.id)}>예약/상세</a
+							>
+						{/if}
+						{#if item.mapUrl}
+							<a
+								href={item.mapUrl}
+								target="_blank"
+								rel="external noreferrer"
+								onclick={() => recordClick(card.id)}>지도</a
+							>
+						{/if}
+					</div>
+				</div>
+			{/each}
+		</div>
+
+		<div class="badge-row">
+			{#each card.badges as badge (badge)}
+				<span>{badge}</span>
+			{/each}
+			{#each card.companionFit as fit (fit)}
+				<span class="companion">{fit}</span>
+			{/each}
+		</div>
+
+		<div class="feedback-bar">
+			<button
+				class={feedbackDraft[card.id]?.sentiment === 'like' ? 'active' : ''}
+				type="button"
+				onclick={() => setFeedback(card.id, 'like')}>좋아요</button
+			>
+			<button
+				class={feedbackDraft[card.id]?.sentiment === 'dislike' ? 'active' : ''}
+				type="button"
+				onclick={() => setFeedback(card.id, 'dislike')}>별로예요</button
+			>
+		</div>
+
+		{#if feedbackDraft[card.id]?.sentiment}
+			<div class="reason-chips">
+				{#each feedbackDraft[card.id]?.sentiment === 'like' ? likeReasons : dislikeReasons as reason (reason)}
+					<button
+						class={feedbackDraft[card.id]?.reasons.includes(reason) ? 'active' : ''}
+						type="button"
+						onclick={() => toggleFeedbackReason(card.id, reason)}
+					>
+						{reason}
+					</button>
+				{/each}
+			</div>
+		{/if}
+	</article>
 {/snippet}
 
 <main class="app-frame">
@@ -2450,17 +2796,13 @@
 							placeholder="짧게 말해도 내가 맞춰볼게"
 						/>
 					</label>
-					<p>선택지 없이 네 말로만 답하면 돼.</p>
+					<p>선택지 없이 네 말로만 답하면 돼. 없으면 건너뛰어도 괜찮아.</p>
 				</div>
 
-				<div class="bottom-actions">
-					<button
-						class="primary"
-						type="button"
-						onclick={continueFollowup}
-						disabled={!followupAnswerInput.trim()}
-					>
-						이 답으로 갈래
+				<div class="bottom-actions inline">
+					<button class="secondary" type="button" onclick={skipFollowups}>건너뛰기</button>
+					<button class="primary" type="button" onclick={continueFollowup}>
+						{followupAnswerInput.trim() ? '이 답으로 갈래' : '바로 추천'}
 					</button>
 				</div>
 			</section>
@@ -2515,14 +2857,27 @@
 					</div>
 				{/if}
 
-				<section class="integration-log-panel" aria-label="외부 API와 AI 사용 로그">
-					<div class="integration-log-header">
-						<div>
-							<p class="eyebrow">사용 로그</p>
-							<h2>외부 API / AI 호출</h2>
-						</div>
-						<span>{integrationLogSource === 'database' ? 'DB' : '임시'}</span>
+				{#if resultInputSummary.length}
+					<div class="result-input-summary" aria-label="사용자가 입력한 추천 조건">
+						{#each resultInputSummary as item (`${item.label}-${item.value}`)}
+							<span><strong>{item.label}</strong>{item.value}</span>
+						{/each}
 					</div>
+				{/if}
+
+				<details class="integration-log-panel integration-log-compact">
+					<summary>
+						<span>외부 API / AI 사용 로그</span>
+						<em>{integrationLogSource === 'database' ? 'DB' : '임시'}</em>
+					</summary>
+					<button
+						class="secondary small"
+						type="button"
+						onclick={refreshIntegrationLogs}
+						disabled={integrationLogsLoading}
+					>
+						{integrationLogsLoading ? '로그 확인 중' : '사용 로그 새로고침'}
+					</button>
 
 					{#if integrationLogs.length}
 						<div class="integration-log-list">
@@ -2552,104 +2907,48 @@
 							{integrationLogsMessage || '이번 추천의 외부 API/AI 호출 로그를 불러오는 중이야.'}
 						</p>
 					{/if}
-				</section>
+				</details>
 
-				<div class="recommendation-list">
+				<div class="recommendation-list card-picker" aria-label="추천 카드 목록">
 					{#each recommendations as card, index (card.id)}
-						<article class="rec-card" style={`--delay:${index * 60}ms`}>
-							<div class="rec-topline">
-								<span class="label-chip">{card.label}</span>
-								<span>{resultTypeLabel(card)}</span>
-							</div>
-							<h2>{card.title}</h2>
-							<p class="why">{card.reason}</p>
-
-							<div class="plan-grid">
-								<div>
-									<span>시간</span>
-									<strong>{card.estimatedDuration}</strong>
+						<div class="recommendation-stack">
+							<button
+								class={`rec-card summary-card ${selectedRecommendationId === card.id ? 'selected' : ''}`}
+								type="button"
+								style={`--delay:${index * 60}ms`}
+								aria-pressed={selectedRecommendationId === card.id}
+								onclick={() => selectRecommendation(card.id)}
+							>
+								<div class="rec-topline">
+									<span class="label-chip">{card.label}</span>
+									<span>{resultTypeLabel(card)}</span>
 								</div>
-								<div>
-									<span>예상 비용</span>
-									<strong>{formatKrw(card.estimatedCost)}</strong>
+								<h2>{card.title}</h2>
+								<p class="card-summary">{card.reason}</p>
+								<div class="summary-metrics">
+									<div>
+										<span>시간</span>
+										<strong>{card.estimatedDuration}</strong>
+									</div>
+									<div>
+										<span>비용</span>
+										<strong>{formatKrw(card.estimatedCost)}</strong>
+									</div>
+									<div>
+										<span>이동</span>
+										<strong>{card.routeSummary}</strong>
+									</div>
 								</div>
-								<div>
-									<span>1인당</span>
-									<strong>{card.perPersonText.replace('1인당 약 ', '')}</strong>
-								</div>
-								<div>
-									<span>이동</span>
-									<strong>{card.routeSummary}</strong>
-								</div>
-								<div>
-									<span>날씨</span>
-									<strong>{weatherFitLabel(card)}</strong>
-								</div>
-							</div>
-
-							<div class="budget-note">{card.budgetText}</div>
-
-							<div class="course-items">
-								{#each card.items as item (item.title)}
-									<a
-										href={item.outboundUrl}
-										target="_blank"
-										rel="external noreferrer"
-										onclick={() => recordClick(card.id)}
-									>
-										<span>{sourceLabel(item.source)}</span>
-										<strong>{item.title}</strong>
-										<em>{formatKrw(item.price)}</em>
-									</a>
-								{/each}
-							</div>
-
-							<div class="badge-row">
-								{#each card.badges as badge (badge)}
-									<span>{badge}</span>
-								{/each}
-								{#each card.companionFit as fit (fit)}
-									<span class="companion">{fit}</span>
-								{/each}
-							</div>
-
-							<div class="rec-actions">
-								<a
-									class="primary link-button"
-									href={card.outboundUrl}
-									target="_blank"
-									rel="external noreferrer"
-									onclick={() => recordClick(card.id)}>상세/길찾기</a
-								>
-							</div>
-
-							<div class="feedback-bar">
-								<button
-									class={feedbackDraft[card.id]?.sentiment === 'like' ? 'active' : ''}
-									type="button"
-									onclick={() => setFeedback(card.id, 'like')}>좋아요</button
-								>
-								<button
-									class={feedbackDraft[card.id]?.sentiment === 'dislike' ? 'active' : ''}
-									type="button"
-									onclick={() => setFeedback(card.id, 'dislike')}>별로예요</button
-								>
-							</div>
-
-							{#if feedbackDraft[card.id]?.sentiment}
-								<div class="reason-chips">
-									{#each feedbackDraft[card.id]?.sentiment === 'like' ? likeReasons : dislikeReasons as reason (reason)}
-										<button
-											class={feedbackDraft[card.id]?.reasons.includes(reason) ? 'active' : ''}
-											type="button"
-											onclick={() => toggleFeedbackReason(card.id, reason)}
-										>
-											{reason}
-										</button>
+								<div class="badge-row compact-badges">
+									{#each card.badges.slice(0, 3) as badge (badge)}
+										<span>{badge}</span>
 									{/each}
 								</div>
+							</button>
+							{#if selectedRecommendationId === card.id}
+								{@render recommendationDetail(card)}
 							{/if}
-						</article>
+						</div>
 					{/each}
 				</div>
 
@@ -3368,6 +3667,8 @@
 		line-height: 1.3;
 	}
 
+	.result-input-summary span,
+	.summary-metrics span,
 	.plan-grid span,
 	.course-items span,
 	.rec-topline span {
@@ -3376,6 +3677,7 @@
 		font-weight: 900;
 	}
 
+	.summary-metrics strong,
 	.plan-grid strong {
 		color: var(--ink);
 		font-size: 14px;
@@ -3434,6 +3736,34 @@
 		color: #28764e;
 	}
 
+	.result-input-summary {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+
+	.result-input-summary span {
+		display: inline-flex;
+		align-items: center;
+		max-width: 100%;
+		min-height: 28px;
+		gap: 5px;
+		border: 1px solid rgba(236, 231, 243, 0.92);
+		border-radius: 999px;
+		background: #fff;
+		color: var(--ink2);
+		padding: 0 9px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.result-input-summary strong {
+		color: var(--faint);
+		font-size: 10px;
+		font-weight: 900;
+	}
+
 	.integration-log-panel {
 		display: grid;
 		gap: 10px;
@@ -3442,6 +3772,31 @@
 		background: #fff;
 		padding: 14px;
 		box-shadow: 0 4px 14px rgba(120, 110, 160, 0.08);
+	}
+
+	.integration-log-compact summary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+		color: var(--ink);
+		font-size: 13px;
+		font-weight: 900;
+		cursor: pointer;
+	}
+
+	.integration-log-compact summary::marker {
+		color: var(--faint);
+	}
+
+	.integration-log-compact summary em {
+		border-radius: 999px;
+		background: #f2edf7;
+		color: var(--muted);
+		padding: 5px 8px;
+		font-size: 10px;
+		font-style: normal;
+		font-weight: 900;
 	}
 
 	.integration-log-header,
@@ -3456,15 +3811,6 @@
 		margin: 0;
 		font-size: 16px;
 		line-height: 1.25;
-	}
-
-	.integration-log-header > span {
-		border-radius: 999px;
-		background: #f2edf7;
-		color: var(--muted);
-		padding: 6px 9px;
-		font-size: 11px;
-		font-weight: 900;
 	}
 
 	.integration-log-list {
@@ -3520,7 +3866,7 @@
 	.recommendation-list {
 		display: grid;
 		gap: 14px;
-		padding-bottom: 90px;
+		padding-bottom: 0;
 	}
 
 	.rec-card {
@@ -3529,6 +3875,30 @@
 		padding: 16px;
 		animation: fade-up 420ms ease both;
 		animation-delay: var(--delay);
+	}
+
+	.card-picker {
+		gap: 10px;
+	}
+
+	.summary-card {
+		width: 100%;
+		border-color: rgba(236, 231, 243, 0.92);
+		color: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.summary-card.selected {
+		border-color: rgba(91, 108, 255, 0.42);
+		box-shadow:
+			0 12px 30px rgba(91, 108, 255, 0.16),
+			0 0 0 4px rgba(91, 108, 255, 0.08);
+	}
+
+	.summary-card:focus-visible {
+		outline: 3px solid rgba(91, 108, 255, 0.22);
+		outline-offset: 3px;
 	}
 
 	.rec-topline {
@@ -3547,6 +3917,114 @@
 		background: rgba(255, 107, 94, 0.12);
 		color: var(--coral) !important;
 		font-size: 12px !important;
+	}
+
+	.card-summary {
+		display: -webkit-box;
+		overflow: hidden;
+		color: var(--ink2);
+		font-size: 13px;
+		line-height: 1.45;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+	}
+
+	.summary-metrics {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 6px;
+	}
+
+	.summary-metrics div {
+		display: grid;
+		gap: 3px;
+		min-width: 0;
+		border-radius: 12px;
+		background: #faf8fc;
+		padding: 8px;
+	}
+
+	.summary-metrics strong {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.recommendation-stack {
+		display: grid;
+		gap: 10px;
+	}
+
+	.recommendation-detail {
+		gap: 14px;
+		margin-bottom: 18px;
+	}
+
+	.inline-detail {
+		border-color: rgba(108, 113, 245, 0.32);
+		box-shadow: 0 18px 44px rgba(108, 113, 245, 0.14);
+	}
+
+	.route-map-panel {
+		display: grid;
+		overflow: hidden;
+		border: 1px solid var(--line);
+		border-radius: 16px;
+		background: #f8f6fb;
+	}
+
+	.route-map-frame,
+	.route-map-fallback {
+		width: 100%;
+		height: 210px;
+		border: 0;
+	}
+
+	.route-map-fallback {
+		display: grid;
+		place-items: center;
+		align-content: center;
+		gap: 6px;
+		padding: 18px;
+		text-align: center;
+	}
+
+	.route-map-fallback strong {
+		color: var(--ink);
+		font-size: 18px;
+	}
+
+	.route-map-fallback span {
+		color: var(--muted);
+		font-size: 13px;
+		font-weight: 800;
+	}
+
+	.route-summary-row {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 8px;
+		align-items: center;
+		border-top: 1px solid var(--line);
+		background: #fff;
+		padding: 10px 12px;
+	}
+
+	.route-summary-row span {
+		border-radius: 999px;
+		background: rgba(108, 113, 245, 0.12);
+		color: var(--indigo);
+		padding: 5px 8px;
+		font-size: 12px;
+		font-weight: 900;
+	}
+
+	.route-summary-row strong {
+		min-width: 0;
+		color: var(--ink);
+		font-size: 13px;
+		line-height: 1.35;
 	}
 
 	.why {
@@ -3589,17 +4067,21 @@
 		gap: 8px;
 	}
 
-	.course-items a {
+	.course-item {
 		display: grid;
-		grid-template-columns: 86px 1fr auto;
+		grid-template-columns: minmax(0, 1fr) auto;
 		gap: 8px;
-		align-items: center;
-		min-height: 50px;
+		align-items: start;
 		border: 1px solid var(--line);
 		border-radius: 14px;
-		padding: 8px 10px;
+		padding: 10px;
 		color: var(--ink);
-		text-decoration: none;
+	}
+
+	.course-item-main {
+		display: grid;
+		gap: 4px;
+		min-width: 0;
 	}
 
 	.course-items strong {
@@ -3607,12 +4089,51 @@
 		line-height: 1.3;
 	}
 
-	.course-items em {
+	.course-item-main span {
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 900;
+	}
+
+	.course-item-main small {
+		color: var(--ink2);
+		font-size: 12px;
+		font-weight: 800;
+		line-height: 1.35;
+	}
+
+	.course-item em {
 		color: var(--muted);
 		font-size: 12px;
 		font-style: normal;
 		font-weight: 900;
 		white-space: nowrap;
+	}
+
+	.item-actions,
+	.execution-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.item-actions {
+		grid-column: 1 / -1;
+	}
+
+	.item-actions a {
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: #fff;
+		color: var(--ink);
+		padding: 7px 10px;
+		font-size: 12px;
+		font-weight: 900;
+		text-decoration: none;
+	}
+
+	.execution-actions .link-button {
+		flex: 1 1 120px;
 	}
 
 	.badge-row,
@@ -3634,6 +4155,11 @@
 	.badge-row span.companion {
 		background: rgba(97, 176, 126, 0.12);
 		color: #28764e;
+	}
+
+	.compact-badges {
+		max-height: 30px;
+		overflow: hidden;
 	}
 
 	.rec-actions {
@@ -3822,7 +4348,7 @@
 			justify-items: center;
 		}
 
-		.course-items a {
+		.course-item {
 			grid-template-columns: 1fr;
 		}
 	}
