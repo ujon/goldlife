@@ -14,6 +14,7 @@ export const GET: RequestHandler = () =>
 			apiFuse: Boolean(env.API_FUSE_API_KEY),
 			myrealtrip: Boolean(env.MYREALTRIP_API_KEY),
 			genrank: true,
+			publicData: Boolean(env.DATA_GO_KR_SERVICE_KEY),
 			swing: Boolean(env.SWING_API_KEY)
 		}
 	});

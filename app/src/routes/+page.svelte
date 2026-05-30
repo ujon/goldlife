@@ -22,6 +22,7 @@
 		AuthMode,
 		FeedbackRecord,
 		FollowupQuestion,
+		LocationSuggestion,
 		LocationValue,
 		RecommendationCard,
 		RecommendationHistoryItem,
@@ -80,6 +81,9 @@
 		source: 'exaone' | 'openai' | 'fallback';
 		model?: string;
 		fallbackReason?: string;
+	};
+	type LocationSearchResult = {
+		suggestions: LocationSuggestion[];
 	};
 	type ServerResult<T> =
 		| { type: 'ok'; data: T }
@@ -181,6 +185,10 @@
 	let histories = $state<RecommendationHistoryItem[]>([]);
 	let busy = $state(false);
 	let manualRegion = $state(defaultLocation.label);
+	let locationSuggestions = $state<LocationSuggestion[]>([]);
+	let locationSuggestionsOpen = $state(false);
+	let locationSuggestionsLoading = $state(false);
+	let locationSearchMessage = $state('');
 	let onboardingIndex = $state(0);
 	let session = $state<RecommendationSession>(createRecommendationSession(defaultLocation));
 	let timeCustomMode = $state(false);
@@ -200,6 +208,8 @@
 	let listeningFor = $state<SpeechTarget | null>(null);
 	let speechTranscript = $state('');
 	let speechMessage = $state('');
+	let locationSearchTimer: ReturnType<typeof setTimeout> | null = null;
+	let locationSearchRequestId = 0;
 
 	let currentOnboardingQuestion = $derived(onboardingQuestions[onboardingIndex]);
 	let onboardingAnswered = $derived(
@@ -429,6 +439,65 @@
 	function saveManualLocation() {
 		const label = manualRegion.trim() || defaultLocation.label;
 		saveLocation({ mode: 'manual', label });
+	}
+
+	function handleManualRegionInput(event: Event) {
+		manualRegion = inputValue(event);
+		locationSuggestionsOpen = true;
+		locationSearchMessage = '';
+
+		if (locationSearchTimer) clearTimeout(locationSearchTimer);
+		locationSearchTimer = setTimeout(() => {
+			void loadLocationSuggestions(manualRegion);
+		}, 180);
+	}
+
+	function handleManualRegionFocus() {
+		locationSuggestionsOpen = true;
+		if (!locationSuggestions.length) void loadLocationSuggestions(manualRegion);
+	}
+
+	function handleManualRegionKeydown(event: KeyboardEvent) {
+		if (event.key !== 'Enter') return;
+		event.preventDefault();
+		saveManualLocation();
+	}
+
+	function selectLocationSuggestion(suggestion: LocationSuggestion) {
+		manualRegion = suggestion.label;
+		locationSuggestionsOpen = false;
+		locationSearchMessage = '';
+	}
+
+	async function loadLocationSuggestions(query: string) {
+		const trimmed = query.trim();
+		const requestId = ++locationSearchRequestId;
+
+		if (!trimmed) {
+			locationSuggestions = [];
+			locationSuggestionsOpen = false;
+			locationSuggestionsLoading = false;
+			return;
+		}
+
+		locationSuggestionsLoading = true;
+		const result = await serverJson<LocationSearchResult>(
+			`/api/locations/search?q=${encodeURIComponent(trimmed)}`,
+			{ method: 'GET' }
+		);
+		if (requestId !== locationSearchRequestId) return;
+
+		locationSuggestionsLoading = false;
+		if (result.type === 'ok') {
+			locationSuggestions = result.data.suggestions;
+			locationSearchMessage = result.data.suggestions.length
+				? ''
+				: '비슷한 지역을 못 찾았어. 입력한 지역으로 바로 시작할 수 있어.';
+			return;
+		}
+
+		locationSuggestions = [];
+		locationSearchMessage = '지역 후보를 불러오지 못했어. 입력한 지역으로 시작해도 돼.';
 	}
 
 	function saveLocation(location: LocationValue) {
@@ -1142,30 +1211,56 @@
 				</form>
 			</section>
 		{:else if screen === 'location'}
-			<section class="screen decision-screen">
-				<div class={`mascot mascot-${mascotState}`}>
-					<img src={saiSymbol} alt="사이" />
-				</div>
-				<div class="question-block">
-					<p class="eyebrow">위치</p>
-					<h1>근처에서 재밌는 거 찾아올게!</h1>
-					<p>싫으면 지역을 직접 골라도 돼.</p>
+			<section class="screen decision-screen location-screen">
+				<div class="location-speaker">
+					<div class="location-bubble">
+						<p class="eyebrow">위치</p>
+						<h1>지금 어디쯤 있어?</h1>
+						<p>근처로 찾아볼게. 동네 이름으로 알려줘도 돼.</p>
+					</div>
+					<div class={`mascot mascot-${mascotState} location-mascot`}>
+						<img src={saiSymbol} alt="사이" />
+					</div>
 				</div>
 
 				<div class="bottom-actions">
-					<button class="primary" type="button" onclick={requestLocation} disabled={busy}>
-						{busy ? '확인 중' : '위치 허용하기'}
+					<div class="location-entry">
+						<label class="field compact">
+							<span>동네 입력</span>
+							<input
+								value={manualRegion}
+								onfocus={handleManualRegionFocus}
+								oninput={handleManualRegionInput}
+								onkeydown={handleManualRegionKeydown}
+								placeholder="예: 성수동, 홍대입구"
+								autocomplete="off"
+							/>
+						</label>
+						{#if locationSuggestionsOpen && (locationSuggestionsLoading || locationSuggestions.length || locationSearchMessage)}
+							<div class="location-suggestions" aria-live="polite">
+								{#if locationSuggestionsLoading}
+									<p>지역 후보 찾는 중</p>
+								{/if}
+								{#each locationSuggestions as suggestion (suggestion.id)}
+									<button type="button" onclick={() => selectLocationSuggestion(suggestion)}>
+										<strong>{suggestion.label}</strong>
+										{#if suggestion.description}
+											<span>{suggestion.description}</span>
+										{/if}
+									</button>
+								{/each}
+								{#if locationSearchMessage}
+									<p>{locationSearchMessage}</p>
+								{/if}
+							</div>
+						{/if}
+					</div>
+					<button class="secondary" type="button" onclick={saveManualLocation}>
+						이 지역으로 시작
 					</button>
-					<label class="field compact">
-						<span>직접 지역</span>
-						<input
-							value={manualRegion}
-							oninput={(event) => (manualRegion = inputValue(event))}
-							placeholder="예: 서울 성수동"
-						/>
-					</label>
-					<button class="secondary" type="button" onclick={saveManualLocation}>지역으로 시작</button
-					>
+					<button class="primary" type="button" onclick={requestLocation} disabled={busy}>
+						{busy ? '위치 확인 중' : '현재 위치로 찾기'}
+					</button>
 				</div>
 			</section>
 		{:else if screen === 'onboarding'}
@@ -1945,6 +2040,11 @@
 		filter: drop-shadow(0 8px 14px rgba(120, 90, 200, 0.14));
 	}
 
+	.mascot-idle img {
+		animation: idle-float 3.2s ease-in-out infinite;
+		transform-origin: 50% 86%;
+	}
+
 	.mascot-thinking img,
 	.mascot-thinking {
 		animation: bob 1.15s ease-in-out infinite;
@@ -1956,6 +2056,109 @@
 
 	.decision-screen {
 		padding-top: 6px;
+	}
+
+	.location-screen {
+		text-align: left;
+	}
+
+	.location-speaker {
+		display: grid;
+		justify-items: center;
+		gap: 12px;
+		padding-top: 2px;
+	}
+
+	.location-mascot {
+		width: 100%;
+	}
+
+	.location-bubble {
+		position: relative;
+		display: grid;
+		gap: 8px;
+		width: min(100%, 360px);
+		padding: 16px;
+		border: 1px solid rgba(236, 231, 243, 0.92);
+		border-radius: 20px;
+		background: #fff;
+		box-shadow: 0 12px 28px rgba(120, 110, 160, 0.13);
+	}
+
+	.location-bubble::before,
+	.location-bubble::after {
+		position: absolute;
+		left: 50%;
+		width: 18px;
+		height: 18px;
+		content: '';
+		transform: translateX(-50%) rotate(45deg);
+	}
+
+	.location-bubble::before {
+		bottom: -10px;
+		border-bottom: 1px solid rgba(236, 231, 243, 0.92);
+		border-right: 1px solid rgba(236, 231, 243, 0.92);
+		background: #fff;
+	}
+
+	.location-bubble::after {
+		bottom: -8px;
+		background: #fff;
+	}
+
+	.location-entry {
+		position: relative;
+		display: grid;
+		gap: 8px;
+	}
+
+	.location-suggestions {
+		position: absolute;
+		right: 0;
+		bottom: calc(100% + 8px);
+		left: 0;
+		z-index: 4;
+		display: grid;
+		gap: 6px;
+		max-height: 178px;
+		overflow-y: auto;
+		border: 1px solid var(--line);
+		border-radius: 16px;
+		background: #fff;
+		padding: 8px;
+		box-shadow: 0 12px 24px rgba(120, 110, 160, 0.13);
+	}
+
+	.location-suggestions button {
+		display: grid;
+		gap: 2px;
+		min-height: 44px;
+		border: 0;
+		border-radius: 12px;
+		background: transparent;
+		color: var(--ink);
+		padding: 8px 10px;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.location-suggestions button:hover,
+	.location-suggestions button:focus-visible {
+		background: #f6f1fb;
+		outline: none;
+	}
+
+	.location-suggestions strong {
+		font-size: 14px;
+		font-weight: 900;
+	}
+
+	.location-suggestions span,
+	.location-suggestions p {
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 700;
 	}
 
 	.coach-row {
@@ -2461,6 +2664,19 @@
 		}
 		50% {
 			transform: translateY(-8px);
+		}
+	}
+
+	@keyframes idle-float {
+		0%,
+		100% {
+			transform: translateY(0) rotate(0deg) scale(1);
+		}
+		30% {
+			transform: translateY(-4px) rotate(-1.4deg) scale(1.01);
+		}
+		62% {
+			transform: translateY(2px) rotate(1.2deg) scale(0.998);
 		}
 	}
 

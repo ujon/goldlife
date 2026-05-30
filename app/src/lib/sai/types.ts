@@ -41,6 +41,13 @@ export type LocationValue = {
 	lng?: number;
 };
 
+export type LocationSuggestion = {
+	id: string;
+	label: string;
+	description?: string;
+	source: 'public_data' | 'fallback';
+};
+
 export type WeatherSnapshot = {
 	condition: 'clear' | 'cloudy' | 'rain' | 'dust';
 	label: string;
