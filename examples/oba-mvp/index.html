@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>오늘 뭐하지 MVP</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="conversation" aria-label="대화 모드">
+        <button class="listen-button" id="listenButton" type="button">
+          <span id="listenIcon">듣기</span>
+          <strong id="speechStatus">대기 중</strong>
+        </button>
+
+        <section class="result-panel" id="resultPanel" aria-live="polite">
+          <header class="result-header">
+            <span id="conversationPreview">대화를 듣고 있어요</span>
+          </header>
+          <p id="analysisLine">대화가 들어오면 제가 후보를 좁혀볼게요.</p>
+          <div class="inline-actions" id="feedbackChips" hidden>
+            <button type="button" data-feedback="indoor">실내로</button>
+            <button type="button" data-feedback="near">가깝게</button>
+            <button type="button" data-feedback="noAlcohol">술 빼고</button>
+          </div>
+          <div class="cards" id="resultCards"></div>
+        </section>
+      </section>
+
+      <textarea
+        id="conversationInput"
+        aria-label="대화 직접 입력"
+        placeholder="데모용 직접 입력"
+        hidden
+      ></textarea>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
