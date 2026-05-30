@@ -29,7 +29,7 @@ export const timeOptions = [
 	{ id: 'half_day', label: '반나절', duration: '4시간', type: 'course' },
 	{ id: 'day', label: '하루', duration: '7시간', type: 'timetable' },
 	{ id: 'weekend', label: '이번 주말', duration: '주말 반나절', type: 'timetable' },
-	{ id: 'custom', label: '직접 입력', duration: '맞춤 시간', type: 'course' }
+	{ id: 'custom', label: '직접 말할래', duration: '맞춤 시간', type: 'course' }
 ] as const;
 
 export const budgetOptions = [
@@ -38,7 +38,7 @@ export const budgetOptions = [
 	{ id: '50000', label: '5만원', value: 50000 },
 	{ id: '100000', label: '10만원', value: 100000 },
 	{ id: '150000', label: '15만원+', value: 150000 },
-	{ id: 'custom', label: '직접 입력', value: 0 }
+	{ id: 'custom', label: '직접 적을래', value: 0 }
 ] as const;
 
 export const babyFacilityOptions = [

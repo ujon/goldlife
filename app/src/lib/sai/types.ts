@@ -8,6 +8,7 @@ export type Screen =
 	| 'situation'
 	| 'time'
 	| 'budget'
+	| 'extra'
 	| 'followup'
 	| 'generating'
 	| 'results';
@@ -123,6 +124,8 @@ export type RecommendationSession = {
 	location?: LocationValue;
 	availableTime?: string;
 	customTime?: string;
+	startDateTime?: string;
+	endDateTime?: string;
 	budgetTotal?: number;
 	weatherSnapshot: WeatherSnapshot;
 	dynamicQuestions: FollowupQuestion[];

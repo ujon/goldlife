@@ -3,20 +3,15 @@
 	import saiSymbol from '$lib/assets/sai-symbol.svg';
 	import type { CandidateBundle } from '$lib/sai/candidates';
 	import {
-		babyFacilityOptions,
-		budgetOptions,
 		buildFollowupQuestions,
 		composeRecommendations,
-		createEmptyCompanionConstraints,
 		createRecommendationSession,
 		dislikeReasons,
 		formatKrw,
 		likeReasons,
-		partyCount,
 		situationLabel,
 		situationOptions,
-		timeMeta,
-		timeOptions
+		timeMeta
 	} from '$lib/sai/recommendations';
 	import type {
 		AuthMode,
@@ -47,7 +42,7 @@
 	};
 
 	type KnownMbtiType = Exclude<MbtiType, '' | 'unknown'>;
-	type SpeechTarget = 'time' | 'budget' | 'followup' | 'onboarding';
+	type SpeechTarget = 'situation' | 'time' | 'budget' | 'extra' | 'followup' | 'onboarding';
 	type OnboardingVoiceOptions = {
 		readQuestion?: boolean;
 	};
@@ -91,11 +86,23 @@
 	type ServerResult<T> =
 		| { type: 'ok'; data: T }
 		| { type: 'error'; status: number; message: string };
+	type ParsedTimePoint = {
+		rawHour: number;
+		hour: number;
+		minute: number;
+		meridiem: string;
+	};
+	type ParsedTimeRange = {
+		start: string;
+		end: string;
+		label: string;
+	};
 
 	const defaultLocation: LocationValue = {
 		mode: 'default',
 		label: '서울 성수동'
 	};
+	const MINUTE_MS = 60 * 1000;
 	const ONBOARDING_SILENCE_TIMEOUT_MS = 9000;
 	const WEB_SPEECH_TTS_ENABLED = true;
 	const spokenOnboardingQuestionIds: OnboardingQuestionId[] = [];
@@ -250,11 +257,13 @@
 	let locationSearchMessage = $state('');
 	let onboardingIndex = $state(0);
 	let session = $state<RecommendationSession>(createRecommendationSession(defaultLocation));
+	let customSituationInput = $state('');
 	let timeCustomMode = $state(false);
 	let customTimeInput = $state('');
-	let budgetCustomMode = $state(false);
 	let customBudgetInput = $state('');
+	let recommendationNoteInput = $state('');
 	let followupIndex = $state(0);
+	let followupAnswerInput = $state('');
 	let dynamicFollowups = $state<FollowupQuestion[]>([]);
 	let followupSource = $state<'exaone' | 'openai' | 'fallback'>('fallback');
 	let recommendations = $state<RecommendationCard[]>([]);
@@ -272,6 +281,7 @@
 	let listeningFor = $state<SpeechTarget | null>(null);
 	let speechTranscript = $state('');
 	let speechMessage = $state('');
+	let recommendationSpeechCaptions = $state<Partial<Record<SpeechTarget, string>>>({});
 	let onboardingSpeaking = $state(false);
 	let onboardingVoicePaused = $state(false);
 	let onboardingIntroVisible = $state(false);
@@ -326,10 +336,8 @@
 	let selectedSituation = $derived(
 		situationOptions.find((option) => option.id === session.situation)
 	);
-	let perPersonBudget = $derived(
-		session.budgetTotal
-			? Math.ceil(session.budgetTotal / partyCount(session.situation) / 1000) * 1000
-			: 0
+	let timeRangeSummary = $derived(
+		timeRangeText(session.startDateTime ?? '', session.endDateTime ?? '')
 	);
 	let fallbackFollowupQuestions = $derived(profile ? buildFollowupQuestions(session, profile) : []);
 	let followupQuestions = $derived(
@@ -962,11 +970,13 @@
 		}
 
 		session = createRecommendationSession(profile.recentLocation ?? defaultLocation);
+		customSituationInput = '';
 		timeCustomMode = false;
 		customTimeInput = '';
-		budgetCustomMode = false;
 		customBudgetInput = '';
+		recommendationNoteInput = '';
 		followupIndex = 0;
+		followupAnswerInput = '';
 		dynamicFollowups = [];
 		followupSource = 'fallback';
 		recommendations = [];
@@ -977,41 +987,54 @@
 		feedbackDraft = {};
 		speechTranscript = '';
 		speechMessage = '';
-		screen = 'situation';
+		recommendationSpeechCaptions = {};
+		screen = 'time';
+		startSpeech('time');
 	}
 
 	function setSituation(situation: Situation) {
 		session.situation = situation;
 	}
 
-	function toggleBaby() {
-		session.companionConstraints = {
-			...session.companionConstraints,
-			hasBaby: !session.companionConstraints.hasBaby
-		};
+	function situationFromText(text: string): Situation | null {
+		const normalized = text.replace(/\s/g, '').toLowerCase();
+		if (!normalized) return null;
+		if (/혼자|나혼자|솔로|혼놀|나만/.test(normalized)) return 'solo';
+		if (/친구|친한|둘이|둘/.test(normalized)) return 'friend';
+		if (/커플|연인|애인|데이트|남자친구|여자친구|남친|여친/.test(normalized)) return 'couple';
+		if (/가족|부모|엄마|아빠|아이|아기|영유아|동생|형제|자매/.test(normalized)) return 'family';
+		if (/동료|회사|직장|모임|팀|단체|회식/.test(normalized)) return 'group';
+		return null;
+	}
 
-		if (!session.companionConstraints.hasBaby) {
-			session.companionConstraints = createEmptyCompanionConstraints();
+	function applySituationTranscript(text: string) {
+		customSituationInput = text;
+		const selected = situationFromText(text);
+		if (selected) setSituation(selected);
+		const normalized = text.replace(/\s/g, '');
+		if (/아기|영유아|유모차|수유|기저귀/.test(normalized)) {
+			session.companionConstraints = {
+				...session.companionConstraints,
+				hasBaby: true,
+				strollerRequired: /유모차/.test(normalized),
+				needsNursingRoom: /수유/.test(normalized),
+				needsDiaperChangingRoom: /기저귀/.test(normalized),
+				preferParking: /주차|차로|차타고/.test(normalized),
+				babyCarrierOk: /아기띠/.test(normalized)
+			};
 		}
 	}
 
-	function toggleBabyFacility(field: (typeof babyFacilityOptions)[number]['id']) {
-		session.companionConstraints = {
-			...session.companionConstraints,
-			[field]: !session.companionConstraints[field]
-		};
-	}
-
-	function toggleBabyCarrier() {
-		session.companionConstraints = {
-			...session.companionConstraints,
-			babyCarrierOk: !session.companionConstraints.babyCarrierOk
-		};
+	function handleSituationAnswerInput(event: Event) {
+		applySituationTranscript(inputValue(event));
 	}
 
 	function continueSituation() {
+		if (!session.situation && customSituationInput.trim()) {
+			applySituationTranscript(customSituationInput);
+		}
 		if (!session.situation) return;
-		screen = 'time';
+		openRecommendationStep('budget', 'budget');
 	}
 
 	function selectTime(id: string) {
@@ -1023,42 +1046,94 @@
 		}
 	}
 
+	function timeIdFromText(text: string) {
+		if (/\d+\s*시(?!간)|부터|까지/.test(text)) return '';
+		if (/주말/.test(text)) return 'weekend';
+		if (/하루|종일/.test(text)) return 'day';
+		if (/반나절|오후|오전/.test(text)) return 'half_day';
+		if (/2|3|두|세/.test(text)) return 'two_three';
+		if (/1|한|하나/.test(text)) return 'one_hour';
+		return '';
+	}
+
+	function handleTimeRangeInput(field: 'startDateTime' | 'endDateTime', value: string) {
+		if (field === 'startDateTime') session.startDateTime = value || undefined;
+		else session.endDateTime = value || undefined;
+		syncTimeRangeFromFields();
+	}
+
 	function continueTime() {
+		if (customTimeInput.trim()) applyTimeTranscript(customTimeInput);
+		syncTimeRangeFromFields();
 		if (!session.availableTime) return;
 		if (timeCustomMode) {
 			const value = customTimeInput.trim();
-			if (!value) return;
+			if (!value && !(session.startDateTime && session.endDateTime)) return;
 			session.customTime = value;
 		}
-		screen = 'budget';
+		openRecommendationStep('situation', 'situation');
 	}
 
-	function selectBudget(value: number) {
-		budgetCustomMode = value === 0;
-		if (value > 0) {
-			session.budgetTotal = value;
-			customBudgetInput = '';
-		}
+	function budgetInputShouldFormat(value: string) {
+		return /[^\d,\s]/.test(value);
 	}
 
-	function applyCustomBudgetInput(value: string) {
-		customBudgetInput = value;
+	function applyCustomBudgetInput(value: string, options: { format?: boolean } = {}) {
 		const parsed = parseBudget(value);
-		if (parsed) session.budgetTotal = parsed;
+		if (!parsed) {
+			customBudgetInput = value;
+			session.budgetTotal = undefined;
+			return;
+		}
+		session.budgetTotal = parsed;
+		customBudgetInput =
+			options.format || budgetInputShouldFormat(value) ? formatKrw(parsed) : value;
 	}
 
-	async function continueBudget() {
+	function handleBudgetAnswerInput(event: Event) {
+		applyCustomBudgetInput(inputValue(event));
+	}
+
+	function continueBudget() {
 		if (!session.budgetTotal) return;
+		openRecommendationStep('extra', 'extra');
+	}
+
+	async function continueExtra() {
+		const note = recommendationNoteInput.trim();
+		if (note) {
+			session.dynamicAnswers = {
+				...session.dynamicAnswers,
+				extra_context: note
+			};
+		} else {
+			const answers = { ...session.dynamicAnswers };
+			delete answers.extra_context;
+			session.dynamicAnswers = answers;
+		}
 		followupIndex = 0;
+		followupAnswerInput = '';
 		resetIntegrationLogs();
 		integrationLogWindowStartedAt = new Date().toISOString();
 		const result = await loadFollowups();
 		dynamicFollowups = result.questions;
-		session.dynamicQuestions = result.questions;
+		session.dynamicQuestions = note
+			? [
+					{
+						id: 'extra_context',
+						prompt: '추천할 때 더 챙겼으면 하는 말 있어?',
+						options: []
+					},
+					...result.questions
+				]
+			: result.questions;
 		followupSource = result.source;
+		clearRecommendationSpeech();
 		screen = followupQuestions.length ? 'followup' : 'generating';
 		if (!followupQuestions.length) {
 			void generateRecommendations();
+		} else {
+			startSpeech('followup');
 		}
 	}
 
@@ -1092,10 +1167,31 @@
 
 		if (followupIndex < followupQuestions.length - 1) {
 			followupIndex += 1;
+			followupAnswerInput = '';
+			openRecommendationStep('followup', 'followup');
 			return;
 		}
 
+		followupAnswerInput = '';
+		clearRecommendationSpeech();
 		void generateRecommendations();
+	}
+
+	function followupAnswerValue(question: FollowupQuestion, text: string) {
+		const normalized = text.replace(/\s/g, '');
+		const selected = question.options.find((option) =>
+			normalized.includes(option.label.replace(/\s/g, ''))
+		);
+		return selected?.value ?? text.trim();
+	}
+
+	function continueFollowup() {
+		if (!currentFollowup) return;
+		const value = followupAnswerInput.trim()
+			? followupAnswerValue(currentFollowup, followupAnswerInput)
+			: '';
+		if (!value) return;
+		answerFollowup(currentFollowup, value);
 	}
 
 	async function generateRecommendations() {
@@ -1336,13 +1432,240 @@
 		return 0;
 	}
 
+	function parseKoreanHour(value: string) {
+		const normalized = value.trim();
+		const numeric = Number(normalized);
+		if (numeric > 0) return numeric;
+		const koreanHours: Record<string, number> = {
+			한: 1,
+			하나: 1,
+			일: 1,
+			두: 2,
+			둘: 2,
+			이: 2,
+			세: 3,
+			셋: 3,
+			삼: 3,
+			네: 4,
+			넷: 4,
+			사: 4,
+			다섯: 5,
+			오: 5,
+			여섯: 6,
+			육: 6,
+			일곱: 7,
+			칠: 7,
+			여덟: 8,
+			팔: 8,
+			아홉: 9,
+			구: 9,
+			열: 10,
+			십: 10,
+			열한: 11,
+			열하나: 11,
+			열두: 12,
+			열둘: 12
+		};
+		return koreanHours[normalized] ?? 0;
+	}
+
+	function normalizeMeridiemHour(hour: number, meridiem: string) {
+		if (/오후|낮|저녁|밤/.test(meridiem)) return hour < 12 ? hour + 12 : hour;
+		if (/오전|아침|새벽/.test(meridiem)) return hour === 12 ? 0 : hour;
+		return hour;
+	}
+
+	function parseTimePoint(
+		hourText: string,
+		minuteText: string | undefined,
+		meridiem: string
+	): ParsedTimePoint | null {
+		const rawHour = parseKoreanHour(hourText);
+		if (rawHour < 1 || rawHour > 24) return null;
+		const minute = minuteText?.includes('반')
+			? 30
+			: Number(minuteText?.replace(/[^0-9]/g, '') || 0);
+		if (minute < 0 || minute > 59) return null;
+		const normalizedHour = rawHour === 24 ? 0 : rawHour;
+		return {
+			rawHour: normalizedHour,
+			hour: normalizeMeridiemHour(normalizedHour, meridiem),
+			minute,
+			meridiem
+		};
+	}
+
+	function dateBaseFromText(text: string) {
+		const now = new Date();
+		const dateOffset = /모레/.test(text) ? 2 : /내일/.test(text) ? 1 : 0;
+		return new Date(
+			now.getFullYear(),
+			now.getMonth(),
+			now.getDate() + dateOffset,
+			now.getHours(),
+			now.getMinutes(),
+			0,
+			0
+		);
+	}
+
+	function isTodayText(text: string) {
+		return !/내일|모레/.test(text);
+	}
+
+	function dateWithTime(base: Date, hour: number, minute: number) {
+		return new Date(base.getFullYear(), base.getMonth(), base.getDate(), hour, minute, 0, 0);
+	}
+
+	function currentDateTime() {
+		const now = new Date();
+		return new Date(
+			now.getFullYear(),
+			now.getMonth(),
+			now.getDate(),
+			now.getHours(),
+			now.getMinutes(),
+			0,
+			0
+		);
+	}
+
+	function toDatetimeLocalValue(date: Date) {
+		const pad = (value: number) => `${value}`.padStart(2, '0');
+		return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+	}
+
+	function parseDatetimeLocalValue(value: string) {
+		if (!value) return null;
+		const date = new Date(value);
+		return Number.isNaN(date.getTime()) ? null : date;
+	}
+
+	function timeAvailabilityFromMinutes(minutes: number) {
+		if (minutes <= 90) return 'one_hour';
+		if (minutes <= 210) return 'two_three';
+		if (minutes <= 330) return 'half_day';
+		return 'day';
+	}
+
+	function formatTimeRangeLabel(start: Date, end: Date) {
+		const formatter = new Intl.DateTimeFormat('ko-KR', {
+			month: 'numeric',
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit'
+		});
+		return `${formatter.format(start)}부터 ${formatter.format(end)}까지`;
+	}
+
+	function timeRangeText(startValue: string, endValue: string) {
+		const start = parseDatetimeLocalValue(startValue);
+		const end = parseDatetimeLocalValue(endValue);
+		if (!start || !end) return '';
+		if (end.getTime() <= start.getTime()) return '종료 시간이 시작 시간보다 뒤여야 해.';
+		const minutes = Math.round((end.getTime() - start.getTime()) / MINUTE_MS);
+		return `${formatTimeRangeLabel(start, end)} · 약 ${Math.round(minutes / 60)}시간`;
+	}
+
+	function applyTimeRange(range: ParsedTimeRange) {
+		session.startDateTime = range.start;
+		session.endDateTime = range.end;
+		session.customTime = range.label;
+		syncTimeRangeFromFields();
+	}
+
+	function syncTimeRangeFromFields() {
+		const start = parseDatetimeLocalValue(session.startDateTime ?? '');
+		const end = parseDatetimeLocalValue(session.endDateTime ?? '');
+		if (start && end && end.getTime() <= start.getTime()) {
+			session.availableTime = undefined;
+			return;
+		}
+		if (!start || !end || end.getTime() <= start.getTime()) return;
+		const minutes = Math.round((end.getTime() - start.getTime()) / MINUTE_MS);
+		session.availableTime = timeAvailabilityFromMinutes(minutes);
+		session.customTime = formatTimeRangeLabel(start, end);
+		timeCustomMode = false;
+	}
+
+	function parseSpokenTimeRange(text: string): ParsedTimeRange | null {
+		const timePattern =
+			/(오전|오후|아침|낮|저녁|밤|새벽)?\s*(열두|열둘|열한|열하나|열|십|아홉|여덟|일곱|여섯|다섯|네|넷|세|셋|두|둘|한|하나|일|이|삼|사|오|육|칠|팔|구|\d{1,2})\s*시(?!간)\s*(반|[0-5]?\d\s*분)?/g;
+		const matches = [...text.matchAll(timePattern)];
+		if (matches.length < 2) return null;
+
+		const firstMatch = matches[0];
+		const secondMatch = matches[1];
+		if (!firstMatch || !secondMatch) return null;
+
+		const first = parseTimePoint(firstMatch[2] ?? '', firstMatch[3], firstMatch[1] ?? '');
+		const secondRawHour = parseKoreanHour(secondMatch[2] ?? '');
+		const inheritedMeridiem =
+			first?.meridiem && first.rawHour < secondRawHour ? first.meridiem : '';
+		const secondMeridiem = secondMatch[1] ?? inheritedMeridiem;
+		const second = parseTimePoint(secondMatch[2] ?? '', secondMatch[3], secondMeridiem);
+		if (!first || !second) return null;
+
+		if (!first.meridiem && !second.meridiem && first.rawHour <= 7 && second.rawHour <= 8) {
+			first.hour += 12;
+			second.hour += 12;
+		}
+
+		const base = dateBaseFromText(text);
+		const start = dateWithTime(base, first.hour, first.minute);
+		let end = dateWithTime(base, second.hour, second.minute);
+
+		if (end.getTime() <= start.getTime()) {
+			const afternoonEnd = dateWithTime(base, second.hour + 12, second.minute);
+			if (!second.meridiem && afternoonEnd.getTime() > start.getTime()) {
+				end = afternoonEnd;
+			} else {
+				end = new Date(end.getTime() + 24 * 60 * MINUTE_MS);
+			}
+		}
+
+		return {
+			start: toDatetimeLocalValue(start),
+			end: toDatetimeLocalValue(end),
+			label: formatTimeRangeLabel(start, end)
+		};
+	}
+
+	function parseFlexibleDayRange(text: string): ParsedTimeRange | null {
+		const normalized = text.replace(/\s/g, '');
+		const wantsDayLong = /하루종일|온종일|종일/.test(normalized);
+		const wantsUntilEvening = /(지금|현재|오늘)?.*(저녁까지|밤까지)/.test(normalized);
+		if (!wantsDayLong && !wantsUntilEvening) return null;
+
+		const base = dateBaseFromText(text);
+		const start = isTodayText(text) ? currentDateTime() : dateWithTime(base, 9, 0);
+		const defaultEndHour = /밤까지/.test(normalized) ? 22 : 20;
+		let end = dateWithTime(base, defaultEndHour, 0);
+		if (end.getTime() <= start.getTime()) {
+			end = dateWithTime(base, 23, 0);
+		}
+		if (end.getTime() <= start.getTime()) {
+			end = new Date(start.getTime() + 2 * 60 * MINUTE_MS);
+		}
+
+		return {
+			start: toDatetimeLocalValue(start),
+			end: toDatetimeLocalValue(end),
+			label: formatTimeRangeLabel(start, end)
+		};
+	}
+
 	function applyTimeTranscript(text: string) {
-		if (/주말/.test(text)) selectTime('weekend');
-		else if (/하루|종일/.test(text)) selectTime('day');
-		else if (/반나절|오후|오전/.test(text)) selectTime('half_day');
-		else if (/2|3|두|세/.test(text)) selectTime('two_three');
-		else if (/1|한|하나/.test(text)) selectTime('one_hour');
-		else {
+		const parsedRange = parseSpokenTimeRange(text) ?? parseFlexibleDayRange(text);
+		if (parsedRange) {
+			applyTimeRange(parsedRange);
+			customTimeInput = text;
+			return;
+		}
+		const matchedTime = timeIdFromText(text);
+		if (matchedTime) {
+			selectTime(matchedTime);
+		} else {
 			selectTime('custom');
 			customTimeInput = text;
 			session.customTime = text;
@@ -1352,23 +1675,48 @@
 	function applyBudgetTranscript(text: string) {
 		const parsed = parseBudget(text);
 		if (!parsed) {
-			budgetCustomMode = true;
 			customBudgetInput = text;
+			session.budgetTotal = undefined;
 			return;
 		}
 		session.budgetTotal = parsed;
-		budgetCustomMode = false;
-		customBudgetInput = '';
+		customBudgetInput = formatKrw(parsed);
 	}
 
 	function applyFollowupTranscript(text: string) {
-		if (!currentFollowup) return;
-		const normalized = text.replace(/\s/g, '');
-		const selected =
-			currentFollowup.options.find((option) =>
-				normalized.includes(option.label.replace(/\s/g, ''))
-			) ?? currentFollowup.options[0];
-		answerFollowup(currentFollowup, selected.value);
+		followupAnswerInput = text;
+	}
+
+	function clearRecommendationSpeech() {
+		if (listeningFor && listeningFor !== 'onboarding') stopActiveRecognition();
+		speechTranscript = '';
+		speechMessage = '';
+	}
+
+	function openRecommendationStep(
+		targetScreen: Screen,
+		target: Exclude<SpeechTarget, 'onboarding'>
+	) {
+		clearRecommendationSpeech();
+		screen = targetScreen;
+		startSpeech(target);
+	}
+
+	function rememberRecommendationSpeech(target: SpeechTarget, text: string) {
+		if (target === 'onboarding' || !text) return;
+		recommendationSpeechCaptions = {
+			...recommendationSpeechCaptions,
+			[target]: text
+		};
+	}
+
+	function recommendationVoiceCaption(target: SpeechTarget, idle: string) {
+		if (listeningFor === target) {
+			return speechTranscript ? `이렇게 들었어: ${speechTranscript}` : '듣고 있어. 편하게 말해줘.';
+		}
+		const remembered = recommendationSpeechCaptions[target];
+		if (remembered) return `이렇게 들었어: ${remembered}`;
+		return speechMessage || idle;
 	}
 
 	function stopOnboardingVoice() {
@@ -1517,8 +1865,12 @@
 				.join('')
 				.trim();
 			speechTranscript = text;
+			rememberRecommendationSpeech(target, text);
+			if (target === 'situation') applySituationTranscript(text);
 			if (target === 'time') applyTimeTranscript(text);
 			if (target === 'budget') applyBudgetTranscript(text);
+			if (target === 'extra') recommendationNoteInput = text;
+			if (target === 'followup') applyFollowupTranscript(text);
 			if (target === 'onboarding') {
 				onboardingAnswerInput = text;
 				onboardingAnswerSource = 'voice';
@@ -1526,6 +1878,7 @@
 			}
 		};
 		recognition.onerror = () => {
+			if (activeRecognition !== recognition) return;
 			speechMessage = '잘 못 들었어. 아래 선택지로 이어가줘.';
 			if (target === 'onboarding') {
 				clearOnboardingSilenceTimer();
@@ -1533,11 +1886,10 @@
 				onboardingSpeechStatus = '잘 못 들었어. 캐릭터를 누르면 다시 들을게.';
 			}
 			listeningFor = null;
-			if (activeRecognition === recognition) activeRecognition = null;
+			activeRecognition = null;
 		};
 		recognition.onend = () => {
 			const naturalEnd = activeRecognition === recognition;
-			if (target === 'followup' && speechTranscript) applyFollowupTranscript(speechTranscript);
 			if (target === 'onboarding' && speechTranscript && naturalEnd) {
 				clearOnboardingSilenceTimer();
 				onboardingSpeechStatus = '답변 받아 적었어. 다음 누르면 저장하고 넘어갈게.';
@@ -1547,8 +1899,10 @@
 				onboardingVoicePaused = true;
 				onboardingSpeechStatus = '잠깐 멈춰둘게. 캐릭터를 누르면 다시 들을게.';
 			}
-			listeningFor = null;
-			if (activeRecognition === recognition) activeRecognition = null;
+			if (naturalEnd) {
+				listeningFor = null;
+				activeRecognition = null;
+			}
 		};
 		try {
 			recognition.start();
@@ -1589,14 +1943,22 @@
 			};
 		}
 
-		const flow: Screen[] = ['situation', 'time', 'budget', 'followup', 'generating', 'results'];
+		const flow: Screen[] = [
+			'time',
+			'situation',
+			'budget',
+			'extra',
+			'followup',
+			'generating',
+			'results'
+		];
 		if (!flow.includes(targetScreen)) return { current: 0, total: 0, label: '' };
 
-		const total = 5 + followupLength;
+		const total = 6 + followupLength;
 		let base = flow.indexOf(targetScreen) + 1;
-		if (targetScreen === 'followup') base = 4 + targetFollowupIndex;
-		if (targetScreen === 'generating') base = 4 + followupLength;
-		if (targetScreen === 'results') base = 5 + followupLength;
+		if (targetScreen === 'followup') base = 5 + targetFollowupIndex;
+		if (targetScreen === 'generating') base = 5 + followupLength;
+		if (targetScreen === 'results') base = 6 + followupLength;
 		return {
 			current: Math.min(base, total),
 			total,
@@ -1671,6 +2033,31 @@
 	/>
 </svelte:head>
 
+{#snippet recommendationCoach(eyebrow: string, title: string, body: string, target: SpeechTarget)}
+	<div class="onboarding-coach recommendation-coach">
+		<div class="onboarding-bubble">
+			<p class="eyebrow">{eyebrow}</p>
+			<h1>{title}</h1>
+			<p>{body}</p>
+		</div>
+		<button
+			class={`onboarding-mascot-ring mascot-pulse ${listeningFor === target ? 'listening' : ''}`}
+			type="button"
+			onclick={() => startSpeech(target)}
+			aria-label="말로 답하기"
+		>
+			<div
+				class={`mascot mascot-${listeningFor === target ? 'listening' : 'idle'} onboarding-mascot`}
+			>
+				<img src={saiSymbol} alt="사이" />
+			</div>
+		</button>
+		<p class="onboarding-voice-caption">
+			{recommendationVoiceCaption(target, '나를 누르면 말로 답할 수 있어. 아래에 직접 적어도 돼.')}
+		</p>
+	</div>
+{/snippet}
+
 <main class="app-frame">
 	<section class={`phone-shell state-${screen}`}>
 		<header class="topbar">
@@ -1699,43 +2086,45 @@
 				</div>
 
 				<form class="auth-form" onsubmit={(event) => event.preventDefault()}>
-					<div class="auth-toggle" aria-label="로그인 또는 회원가입">
-						<button
-							class={authMode === 'login' ? 'active' : ''}
-							type="button"
-							onclick={() => (authMode = 'login')}>로그인</button
-						>
-						<button
-							class={authMode === 'signup' ? 'active' : ''}
-							type="button"
-							onclick={() => (authMode = 'signup')}>회원가입</button
-						>
+					<div class="auth-fields">
+						<div class="auth-toggle" aria-label="로그인 또는 회원가입">
+							<button
+								class={authMode === 'login' ? 'active' : ''}
+								type="button"
+								onclick={() => (authMode = 'login')}>로그인</button
+							>
+							<button
+								class={authMode === 'signup' ? 'active' : ''}
+								type="button"
+								onclick={() => (authMode = 'signup')}>회원가입</button
+							>
+						</div>
+
+						<label class="field">
+							<span>이메일</span>
+							<input
+								type="email"
+								autocomplete="email"
+								value={authEmail}
+								oninput={(event) => (authEmail = inputValue(event))}
+								placeholder="you@example.com"
+							/>
+						</label>
+						<label class="field">
+							<span>비밀번호</span>
+							<input
+								type="password"
+								autocomplete={authMode === 'login' ? 'current-password' : 'new-password'}
+								value={authPassword}
+								oninput={(event) => (authPassword = inputValue(event))}
+								placeholder="비밀번호"
+							/>
+						</label>
+
+						{#if authError}
+							<p class="error-text">{authError}</p>
+						{/if}
 					</div>
-
-					<label class="field">
-						<span>이메일</span>
-						<input
-							type="email"
-							autocomplete="email"
-							value={authEmail}
-							oninput={(event) => (authEmail = inputValue(event))}
-							placeholder="you@example.com"
-						/>
-					</label>
-					<label class="field">
-						<span>비밀번호</span>
-						<input
-							type="password"
-							autocomplete={authMode === 'login' ? 'current-password' : 'new-password'}
-							value={authPassword}
-							oninput={(event) => (authPassword = inputValue(event))}
-							placeholder="비밀번호"
-						/>
-					</label>
-
-					{#if authError}
-						<p class="error-text">{authError}</p>
-					{/if}
 
 					<button class="primary" type="button" onclick={submitAuth} disabled={busy}>
 						{busy ? '잠깐만' : authMode === 'login' ? '로그인' : '회원가입'}
@@ -1898,110 +2287,75 @@
 				{/if}
 			</section>
 		{:else if screen === 'situation'}
-			<section class="screen decision-screen">
-				<div class="question-block">
-					<p class="eyebrow">오늘의 상황</p>
-					<h1>오늘 누구랑?</h1>
-					<p>아기 동반 같은 제약은 이번 추천에만 저장할게.</p>
+			<section class="screen decision-screen onboarding-screen recommendation-screen">
+				{@render recommendationCoach(
+					'추천 질문 2/4',
+					'오늘은 누구랑 같이 움직여?',
+					'혼자여도 좋고, 친구나 가족이랑 가도 좋아. 함께할 구성원만 알려줘.',
+					'situation'
+				)}
+
+				<div class="onboarding-answer-panel recommendation-answer-panel">
+					<label class="field compact">
+						<span>직접 말 남기기</span>
+						<input
+							value={customSituationInput}
+							oninput={handleSituationAnswerInput}
+							placeholder="예: 친구랑 둘이 가 / 아기랑 가족끼리"
+						/>
+					</label>
+					<p>
+						{selectedSituation
+							? `${selectedSituation.label} 기준으로 볼게.`
+							: '말로 알려줘도 내가 구성원을 골라볼게.'}
+					</p>
 				</div>
-
-				<div class="situation-grid">
-					{#each situationOptions as option (option.id)}
-						<button
-							class={`situation-card accent-${option.accent} ${session.situation === option.id ? 'active' : ''}`}
-							type="button"
-							onclick={() => setSituation(option.id)}
-						>
-							<span>{option.icon}</span>
-							<strong>{option.label}</strong>
-						</button>
-					{/each}
-				</div>
-
-				<button
-					class={`baby-toggle ${session.companionConstraints.hasBaby ? 'active' : ''}`}
-					type="button"
-					onclick={toggleBaby}
-				>
-					<span class="toggle-dot"></span>
-					<strong>아기(영유아) 동반</strong>
-				</button>
-
-				{#if session.companionConstraints.hasBaby}
-					<div class="facility-panel">
-						<p>필요한 편의를 골라줘.</p>
-						<div class="chip-grid">
-							{#each babyFacilityOptions as option (option.id)}
-								<button
-									class={session.companionConstraints[option.id] ? 'active' : ''}
-									type="button"
-									onclick={() => toggleBabyFacility(option.id)}
-								>
-									{option.label}
-								</button>
-							{/each}
-							<button
-								class={session.companionConstraints.babyCarrierOk ? 'active' : ''}
-								type="button"
-								onclick={toggleBabyCarrier}>아기띠도 가능</button
-							>
-						</div>
-					</div>
-				{/if}
 
 				<div class="bottom-actions">
 					<button
 						class="primary"
 						type="button"
 						onclick={continueSituation}
-						disabled={!selectedSituation}
+						disabled={!selectedSituation && !situationFromText(customSituationInput)}
 					>
-						다음
+						다음으로
 					</button>
 				</div>
 			</section>
 		{:else if screen === 'time'}
-			<section class="screen decision-screen">
-				<div class="question-block">
-					<p class="eyebrow">{selectedSituation?.label ?? '상황'} · 시간</p>
-					<h1>쓸 수 있는 시간이 얼마나 돼?</h1>
-					<p>시간이 길수록 코스형으로 묶어볼게.</p>
-				</div>
+			<section class="screen decision-screen onboarding-screen recommendation-screen">
+				{@render recommendationCoach(
+					'추천 질문 1/4',
+					'오늘 시간은 어느 정도 있어?',
+					'한 시간이든 반나절이든 괜찮아. 딱 가능한 만큼만 알려줘.',
+					'time'
+				)}
 
-				<div class="chip-grid">
-					{#each timeOptions as option (option.id)}
-						<button
-							class={session.availableTime === option.id ? 'active' : ''}
-							type="button"
-							onclick={() => selectTime(option.id)}
-						>
-							{option.label}
-						</button>
-					{/each}
-				</div>
-
-				{#if timeCustomMode}
-					<label class="field">
-						<span>직접 입력</span>
-						<textarea
-							rows="2"
-							value={customTimeInput}
-							oninput={(event) => (customTimeInput = textareaValue(event))}
-							placeholder="예: 오늘 3시부터 7시까지"
-						></textarea>
-					</label>
-				{/if}
-
-				<div class="voice-row">
-					<button
-						class={`mic ${listeningFor === 'time' ? 'listening' : ''}`}
-						type="button"
-						onclick={() => startSpeech('time')}
-						aria-label="시간 음성 입력"
-					>
-						<span></span>
-					</button>
-					<p>{speechTranscript || speechMessage || '말해도 되고, 칩으로 골라도 돼.'}</p>
+				<div class="onboarding-answer-panel recommendation-answer-panel">
+					<div class="datetime-grid" aria-label="시작과 종료 시간">
+						<label class="field compact">
+							<span>시작 시간</span>
+							<input
+								type="datetime-local"
+								value={session.startDateTime ?? ''}
+								oninput={(event) => handleTimeRangeInput('startDateTime', inputValue(event))}
+							/>
+						</label>
+						<label class="field compact">
+							<span>종료 시간</span>
+							<input
+								type="datetime-local"
+								value={session.endDateTime ?? ''}
+								oninput={(event) => handleTimeRangeInput('endDateTime', inputValue(event))}
+							/>
+						</label>
+					</div>
+					<p>
+						{timeRangeSummary ||
+							(session.availableTime
+								? `${timeMeta(session.availableTime).label} 정도로 볼게.`
+								: '문장으로 말하면 시작이랑 끝 시간을 자동으로 채워볼게.')}
+					</p>
 				</div>
 
 				<div class="bottom-actions">
@@ -2009,71 +2363,32 @@
 						class="primary"
 						type="button"
 						onclick={continueTime}
-						disabled={!session.availableTime}
+						disabled={!session.availableTime || (timeCustomMode && !customTimeInput.trim())}
 					>
-						다음
+						이만큼 가능해
 					</button>
 				</div>
 			</section>
 		{:else if screen === 'budget'}
-			<section class="screen decision-screen">
-				<div class="question-block">
-					<p class="eyebrow">{timeMeta(session.availableTime).label} · 총 예산</p>
-					<h1>이번 활동 총 예산은?</h1>
-					<p>여러 명이어도 총액 기준으로 계산할게.</p>
-				</div>
+			<section class="screen decision-screen onboarding-screen recommendation-screen">
+				{@render recommendationCoach(
+					'추천 질문 3/4',
+					'오늘 예산은 얼마야?',
+					'여러 명이어도 총 예산으로 알려줘. 그 금액 안에서 맞춰볼게.',
+					'budget'
+				)}
 
-				<div class="chip-grid">
-					{#each budgetOptions as option (option.id)}
-						<button
-							class={option.value > 0
-								? session.budgetTotal === option.value
-									? 'active'
-									: ''
-								: budgetCustomMode
-									? 'active'
-									: ''}
-							type="button"
-							onclick={() => selectBudget(option.value)}
-						>
-							{option.label}
-						</button>
-					{/each}
-				</div>
-
-				{#if budgetCustomMode}
-					<label class="field">
-						<span>직접 입력</span>
+				<div class="onboarding-answer-panel recommendation-answer-panel">
+					<label class="field compact">
+						<span>총 예산</span>
 						<input
 							inputmode="numeric"
 							value={customBudgetInput}
-							oninput={(event) => applyCustomBudgetInput(inputValue(event))}
-							placeholder="예: 60000"
+							oninput={handleBudgetAnswerInput}
+							placeholder="예: 60,000원"
 						/>
 					</label>
-				{/if}
-
-				<div class="budget-meter" aria-label="예산 요약">
-					<div>
-						<span>총 예산</span>
-						<strong>{session.budgetTotal ? formatKrw(session.budgetTotal) : '-'}</strong>
-					</div>
-					<div>
-						<span>참고 1인당</span>
-						<strong>{perPersonBudget ? formatKrw(perPersonBudget) : '-'}</strong>
-					</div>
-				</div>
-
-				<div class="voice-row">
-					<button
-						class={`mic ${listeningFor === 'budget' ? 'listening' : ''}`}
-						type="button"
-						onclick={() => startSpeech('budget')}
-						aria-label="예산 음성 입력"
-					>
-						<span></span>
-					</button>
-					<p>{speechTranscript || speechMessage || '예: 십만원, 6만원처럼 말해도 돼.'}</p>
+					<p>말로 답하면 예산 금액만 여기에 표시할게.</p>
 				</div>
 
 				<div class="bottom-actions">
@@ -2083,55 +2398,70 @@
 						onclick={continueBudget}
 						disabled={!session.budgetTotal}
 					>
-						AI에게 물어보기
+						좋아, 다음
 					</button>
 				</div>
 			</section>
+		{:else if screen === 'extra'}
+			<section class="screen decision-screen onboarding-screen recommendation-screen">
+				{@render recommendationCoach(
+					'추천 질문 4/4',
+					'더 하고 싶은 말 있어?',
+					'원하는 분위기, 피하고 싶은 것, 꼭 챙길 조건이 있으면 말해줘. 없으면 바로 넘어가도 돼.',
+					'extra'
+				)}
+
+				<div class="onboarding-answer-panel recommendation-answer-panel">
+					<label class="field compact">
+						<span>추가로 남길 말</span>
+						<textarea
+							rows="3"
+							value={recommendationNoteInput}
+							oninput={(event) => (recommendationNoteInput = textareaValue(event))}
+							placeholder="예: 너무 시끄럽지 않았으면 좋겠어"
+						></textarea>
+					</label>
+					<p>없으면 비워두고 넘어가도 돼.</p>
+				</div>
+
+				<div class="bottom-actions">
+					<button class="primary" type="button" onclick={continueExtra}> 이제 골라줘 </button>
+				</div>
+			</section>
 		{:else if screen === 'followup'}
-			<section class="screen decision-screen">
-				<div class="coach-row">
-					<div
-						class={`mini-mascot-ring mascot-pulse ${listeningFor === 'followup' ? 'listening' : ''}`}
-					>
-						<div class="mini-mascot mascot-thinking">
-							<img src={saiSymbol} alt="" />
-						</div>
-					</div>
-					<div class="speech-bubble">
-						<p class="eyebrow">
-							AI 추가 질문 {followupIndex + 1}/{followupQuestions.length} · {followupSource ===
-							'exaone'
-								? 'EXAONE'
-								: followupSource === 'openai'
-									? 'OpenAI'
-									: 'fallback'}
-						</p>
-						<h1>{currentFollowup?.prompt}</h1>
-						<p>시간, 예산, 동행 제약은 이미 받았으니 다시 묻지 않을게.</p>
-					</div>
+			<section class="screen decision-screen onboarding-screen recommendation-screen">
+				{@render recommendationCoach(
+					`추가 질문 ${followupIndex + 1}/${followupQuestions.length}`,
+					currentFollowup?.prompt ?? '하나만 더 물어볼게',
+					followupSource === 'exaone'
+						? 'EXAONE이 더 필요한 맥락만 골라서 물어보는 중이야.'
+						: followupSource === 'openai'
+							? 'AI가 추천 전에 딱 필요한 맥락만 확인하는 중이야.'
+							: '방금 말한 시간, 돈, 구성원은 다시 안 물어볼게.',
+					'followup'
+				)}
+
+				<div class="onboarding-answer-panel recommendation-answer-panel">
+					<label class="field compact">
+						<span>직접 말 남기기</span>
+						<input
+							value={followupAnswerInput}
+							oninput={(event) => (followupAnswerInput = inputValue(event))}
+							placeholder="짧게 말해도 내가 맞춰볼게"
+						/>
+					</label>
+					<p>선택지 없이 네 말로만 답하면 돼.</p>
 				</div>
 
-				<div class="choice-stack">
-					{#each currentFollowup?.options ?? [] as option (option.id)}
-						<button
-							type="button"
-							onclick={() => currentFollowup && answerFollowup(currentFollowup, option.value)}
-						>
-							{option.label}
-						</button>
-					{/each}
-				</div>
-
-				<div class="voice-row">
+				<div class="bottom-actions">
 					<button
-						class={`mic ${listeningFor === 'followup' ? 'listening' : ''}`}
+						class="primary"
 						type="button"
-						onclick={() => startSpeech('followup')}
-						aria-label="추가 질문 음성 답변"
+						onclick={continueFollowup}
+						disabled={!followupAnswerInput.trim()}
 					>
-						<span></span>
+						이 답으로 갈래
 					</button>
-					<p>{speechTranscript || speechMessage || '짧게 말해도 내가 골라볼게.'}</p>
 				</div>
 			</section>
 		{:else if screen === 'generating'}
@@ -2376,19 +2706,32 @@
 		--good: oklch(0.64 0.13 152);
 		--warn: oklch(0.7 0.15 55);
 		--brand: linear-gradient(90deg, #ff6b5e, #b45ee8 55%, #5b6cff);
-		min-height: 100vh;
+		min-height: 100dvh;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 24px;
 		background:
-			linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0)), var(--bg);
+			radial-gradient(circle at 50% 0, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 42%),
+			#f3eee8;
 	}
 
 	.phone-shell {
-		width: min(100%, 480px);
-		min-height: 100vh;
-		margin: 0 auto;
+		width: min(100%, 430px);
+		height: 100dvh;
+		min-height: 100dvh;
+		overflow-y: auto;
+		margin: 0;
+		border: 1px solid rgba(60, 52, 73, 0.12);
+		border-radius: 0;
+		background: var(--bg);
 		padding: max(16px, env(safe-area-inset-top)) 20px max(18px, env(safe-area-inset-bottom));
 		display: flex;
 		flex-direction: column;
 		gap: 14px;
+		box-shadow:
+			0 24px 70px rgba(70, 58, 90, 0.18),
+			0 2px 8px rgba(70, 58, 90, 0.08);
 	}
 
 	.topbar {
@@ -2434,6 +2777,10 @@
 		justify-content: center;
 	}
 
+	.auth-screen {
+		justify-content: stretch;
+	}
+
 	.hero-lockup,
 	.home-hero,
 	.question-block {
@@ -2442,6 +2789,8 @@
 	}
 
 	.hero-lockup {
+		flex: 0 0 auto;
+		align-content: center;
 		text-align: center;
 		justify-items: center;
 		margin-top: 10px;
@@ -2491,8 +2840,7 @@
 		font-weight: 600;
 	}
 
-	.auth-form,
-	.facility-panel,
+	.auth-fields,
 	.rec-card {
 		border: 1px solid rgba(236, 231, 243, 0.92);
 		border-radius: 20px;
@@ -2501,8 +2849,18 @@
 	}
 
 	.auth-form {
+		flex: 1 1 auto;
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		gap: 18px;
+		min-height: 0;
+	}
+
+	.auth-fields {
 		display: grid;
 		gap: 12px;
+		margin-block: auto;
 		padding: 16px;
 	}
 
@@ -2516,8 +2874,6 @@
 	}
 
 	.auth-toggle button,
-	.choice-stack button,
-	.chip-grid button,
 	.feedback-bar button,
 	.reason-chips button {
 		min-height: 44px;
@@ -2530,8 +2886,6 @@
 	}
 
 	.auth-toggle button.active,
-	.choice-stack button.active,
-	.chip-grid button.active,
 	.reason-chips button.active {
 		background: var(--ink);
 		color: #fff;
@@ -2630,8 +2984,7 @@
 		font-size: 17px;
 	}
 
-	.mascot,
-	.mini-mascot {
+	.mascot {
 		display: grid;
 		place-items: center;
 		justify-self: center;
@@ -2641,12 +2994,6 @@
 		width: 132px;
 		height: 148px;
 		filter: drop-shadow(0 16px 24px rgba(120, 90, 200, 0.18));
-	}
-
-	.mini-mascot img {
-		width: 58px;
-		height: 65px;
-		filter: drop-shadow(0 8px 14px rgba(120, 90, 200, 0.14));
 	}
 
 	.mascot-idle img {
@@ -2774,6 +3121,26 @@
 		gap: 12px;
 	}
 
+	.recommendation-screen {
+		align-items: center;
+		gap: 12px;
+		justify-content: stretch;
+	}
+
+	.recommendation-screen .recommendation-coach,
+	.recommendation-screen .recommendation-answer-panel,
+	.recommendation-screen .bottom-actions {
+		width: min(100%, 370px);
+	}
+
+	.recommendation-screen .bottom-actions {
+		position: static;
+		flex: 0 0 auto;
+		margin-top: 0;
+		padding-top: 0;
+		background: transparent;
+	}
+
 	.onboarding-coach {
 		flex: 1;
 		display: grid;
@@ -2781,6 +3148,29 @@
 		justify-items: center;
 		gap: 14px;
 		min-height: 0;
+	}
+
+	.recommendation-coach {
+		flex: 1 1 auto;
+		align-content: center;
+		justify-items: center;
+		gap: 12px;
+		min-height: 0;
+		margin-bottom: 0;
+	}
+
+	.recommendation-coach .onboarding-bubble {
+		padding: 14px;
+	}
+
+	.recommendation-coach .onboarding-mascot-ring {
+		width: 118px;
+		height: 126px;
+	}
+
+	.recommendation-coach .onboarding-mascot img {
+		width: 104px;
+		height: 116px;
 	}
 
 	.onboarding-bubble {
@@ -2825,8 +3215,7 @@
 		line-height: 1.55;
 	}
 
-	.onboarding-mascot-ring,
-	.mini-mascot-ring {
+	.onboarding-mascot-ring {
 		position: relative;
 		display: grid;
 		place-items: center;
@@ -2851,11 +3240,6 @@
 		outline-offset: 4px;
 	}
 
-	.mini-mascot-ring {
-		width: 76px;
-		height: 82px;
-	}
-
 	.mascot-pulse::before,
 	.mascot-pulse::after {
 		position: absolute;
@@ -2869,11 +3253,6 @@
 		pointer-events: none;
 	}
 
-	.mini-mascot-ring::before,
-	.mini-mascot-ring::after {
-		inset: 2px;
-	}
-
 	.mascot-pulse.listening::before,
 	.mascot-pulse.listening::after {
 		animation: listen-ring 1.55s ease-out infinite;
@@ -2885,8 +3264,7 @@
 		animation-delay: 0.72s;
 	}
 
-	.onboarding-mascot,
-	.mini-mascot-ring .mini-mascot {
+	.onboarding-mascot {
 		z-index: 1;
 	}
 
@@ -2911,6 +3289,30 @@
 		gap: 8px;
 	}
 
+	.recommendation-answer-panel {
+		flex: 0 0 auto;
+	}
+
+	.recommendation-answer-panel textarea {
+		min-height: 86px;
+	}
+
+	.datetime-grid {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 10px;
+	}
+
+	.datetime-grid .field,
+	.datetime-grid input {
+		min-width: 0;
+	}
+
+	.datetime-grid input {
+		font-size: 15px;
+		line-height: 1.2;
+	}
+
 	.onboarding-screen .bottom-actions {
 		margin-top: 4px;
 	}
@@ -2921,155 +3323,6 @@
 		color: var(--muted);
 		font-size: 12px;
 		font-weight: 800;
-	}
-
-	.coach-row {
-		display: grid;
-		grid-template-columns: 76px 1fr;
-		gap: 12px;
-		align-items: start;
-	}
-
-	.speech-bubble {
-		display: grid;
-		gap: 8px;
-		padding: 16px;
-		border: 1px solid var(--line);
-		border-radius: 20px;
-		background: #fff;
-		box-shadow: 0 4px 14px rgba(120, 110, 160, 0.1);
-	}
-
-	.choice-stack,
-	.chip-grid {
-		display: grid;
-		gap: 10px;
-	}
-
-	.choice-stack button,
-	.chip-grid button {
-		border-color: var(--line);
-		background: #fff;
-		text-align: left;
-		padding: 0 14px;
-	}
-
-	.choice-stack button.active,
-	.chip-grid button.active {
-		border-color: var(--ink);
-	}
-
-	.choice-stack.compact-grid {
-		grid-template-columns: repeat(4, minmax(0, 1fr));
-	}
-
-	.choice-stack.compact-grid button {
-		min-height: 42px;
-		padding: 0 6px;
-		text-align: center;
-	}
-
-	.chip-grid {
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-	}
-
-	.chip-grid button {
-		text-align: center;
-	}
-
-	.situation-grid {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 10px;
-	}
-
-	.situation-card {
-		min-height: 94px;
-		display: grid;
-		place-items: center;
-		gap: 8px;
-		border: 1px solid var(--line);
-		border-radius: 18px;
-		background: #fff;
-		color: var(--ink);
-		cursor: pointer;
-	}
-
-	.situation-card span {
-		display: grid;
-		place-items: center;
-		width: 38px;
-		height: 38px;
-		border-radius: 999px;
-		background: #f6f1fb;
-		font-size: 13px;
-		font-weight: 950;
-	}
-
-	.situation-card strong {
-		font-weight: 900;
-	}
-
-	.situation-card.active {
-		border-color: currentColor;
-		box-shadow: 0 8px 22px rgba(120, 110, 160, 0.14);
-	}
-
-	.accent-solo {
-		color: oklch(0.58 0.13 30);
-	}
-
-	.accent-friend {
-		color: oklch(0.52 0.13 75);
-	}
-
-	.accent-couple {
-		color: oklch(0.58 0.13 352);
-	}
-
-	.accent-family {
-		color: oklch(0.5 0.12 155);
-	}
-
-	.accent-group {
-		color: oklch(0.5 0.13 265);
-	}
-
-	.baby-toggle {
-		min-height: 52px;
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		border: 1px solid var(--line);
-		border-radius: 16px;
-		background: #fff;
-		color: var(--ink);
-		padding: 0 14px;
-		cursor: pointer;
-	}
-
-	.toggle-dot {
-		width: 22px;
-		height: 22px;
-		border: 2px solid #d8d0e2;
-		border-radius: 999px;
-	}
-
-	.baby-toggle.active {
-		border-color: rgba(100, 180, 130, 0.5);
-		background: rgba(100, 180, 130, 0.1);
-	}
-
-	.baby-toggle.active .toggle-dot {
-		border-color: var(--good);
-		background: var(--good);
-		box-shadow: inset 0 0 0 5px #fff;
-	}
-
-	.facility-panel {
-		display: grid;
-		gap: 12px;
-		padding: 14px;
 	}
 
 	.home-hero {
@@ -3115,22 +3368,6 @@
 		line-height: 1.3;
 	}
 
-	.budget-meter {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 10px;
-	}
-
-	.budget-meter div {
-		display: grid;
-		gap: 5px;
-		border: 1px solid var(--line);
-		border-radius: 16px;
-		background: #fff;
-		padding: 14px;
-	}
-
-	.budget-meter span,
 	.plan-grid span,
 	.course-items span,
 	.rec-topline span {
@@ -3139,58 +3376,10 @@
 		font-weight: 900;
 	}
 
-	.budget-meter strong,
 	.plan-grid strong {
 		color: var(--ink);
 		font-size: 14px;
 		line-height: 1.35;
-	}
-
-	.voice-row {
-		display: grid;
-		grid-template-columns: 52px 1fr;
-		gap: 10px;
-		align-items: center;
-		min-height: 56px;
-	}
-
-	.mic {
-		position: relative;
-		width: 52px;
-		height: 52px;
-		border: 0;
-		border-radius: 999px;
-		background: var(--brand);
-		cursor: pointer;
-		box-shadow: 0 8px 20px rgba(180, 94, 232, 0.24);
-	}
-
-	.mic span,
-	.mic::before {
-		position: absolute;
-		left: 50%;
-		top: 50%;
-		transform: translate(-50%, -50%);
-	}
-
-	.mic span {
-		width: 14px;
-		height: 22px;
-		border-radius: 999px;
-		background: #fff;
-	}
-
-	.mic::before {
-		content: '';
-		width: 24px;
-		height: 28px;
-		border: 3px solid rgba(255, 255, 255, 0.78);
-		border-top: 0;
-		border-radius: 0 0 999px 999px;
-	}
-
-	.mic.listening {
-		animation: pulse 900ms ease-in-out infinite;
 	}
 
 	.loading-stack {
@@ -3605,14 +3794,26 @@
 		}
 	}
 
+	@media (max-width: 520px) {
+		.app-frame {
+			align-items: stretch;
+			padding: 0;
+		}
+
+		.phone-shell {
+			width: 100%;
+			height: auto;
+			min-height: 100dvh;
+			border: 0;
+			border-radius: 0;
+			box-shadow: none;
+		}
+	}
+
 	@media (max-width: 360px) {
 		.phone-shell {
 			padding-left: 14px;
 			padding-right: 14px;
-		}
-
-		.choice-stack.compact-grid {
-			grid-template-columns: repeat(3, minmax(0, 1fr));
 		}
 
 		.home-hero {
