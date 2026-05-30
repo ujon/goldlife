@@ -19,7 +19,7 @@
 
 | 리소스 | 역할 | 제외 / 후순위 이유 | 참고 상태 |
 | --- | --- | --- | --- |
-| Rocketpunch | 채용/커리어/비즈니스 SNS 데이터 | SAI의 데이트·혼놀·여행 코스 추천과 직접 무관 | ✅ OpenAPI 3.1.0 있음. spec은 보관 |
+| Rocketpunch | 채용/커리어/비즈니스 SNS 데이터 | SAI의 데이트·혼놀·여행 코스 추천과 직접 무관 | ✅ OpenAPI 3.1.0 있음. `secondary/rocketpunch`에 보관 |
 | Gangnam Unni | 뷰티/의료 확장 후보 | 현재 PRD 핵심 코스 구성 요소가 아님 | 🟡 Remote MCP. `tools/list` JSON 없음 |
 | CryptoQuant | 크립토/온체인/시장 데이터 | SAI 도메인과 무관 | 🟡 REST/MCP docs만 있음, OpenAPI 없음 |
 | Maroo | 블록체인 RPC/Agent Wallet | SAI 코스 추천과 무관 | 🟡 표준 EVM RPC는 사용 가능. MAWS/MCP schema 없음 |
