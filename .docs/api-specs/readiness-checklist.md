@@ -12,7 +12,7 @@
 | Myrealtrip | 투어/액티비티, 항공, 숙박, 예약 딥링크 | 🟡 REST API + MCP. 로컬 OpenAPI 없음, 문서 기반 endpoint catalog 필요 | ✅ 마케팅파트너 가입 후 Bearer API key. MCP는 인증 불필요로 기재 |
 | GenRank | 트렌드/키워드 시드 | ✅ REST API. Custom API docs JSON 있음, OpenAPI는 아님 | ❌ 무인증 공개 GET |
 | tobl.ai / Cocoun | MBTI/취향 페르소나 council, 투표 결과 | 🟡 Remote MCP. tool 정보 있음, 실제 `tools/list` schema 필요 | ✅ cocoun.org `/builder`에서 X-API-Key 셀프 발급 |
-| LG U+ / EXAONE | 한국어 음성 NLU, 페르소나 카피 생성 | ⚪ Model runtime. API spec 대상 아님, HuggingFace/model runtime 기반 | 🟡 런타임 환경에 따라 다름 |
+| LG U+ / EXAONE | 한국어 음성 NLU, 페르소나 카피 생성 | 🟡 Friendli serverless model runtime. OpenAI-compatible Chat Completions 방식 | 🟡 Friendli API key 발급 필요 |
 | Swing | 택시 ETA, 주변 공유 모빌리티 보조 정보 | ✅ REST API. OpenAPI 3.0.1 있음, 2 paths | ✅ 운영팀 현장 배포 stage key. `X-API-KEY` |
 
 ## SAI 제외 / 후순위 리소스
