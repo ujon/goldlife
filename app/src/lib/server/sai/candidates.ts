@@ -101,6 +101,19 @@ async function getTrendKeywords(statuses: ProviderStatus[]) {
 
 async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) {
 	const fallback = fallbackActivities(input);
+	const [myrealtripResult, apiFuseResult] = await Promise.allSettled([
+		getMyrealtripActivities(input, statuses),
+		getApiFuseActivityCandidates(input)
+	]);
+	const activities = dedupeActivities([
+		...(apiFuseResult.status === 'fulfilled' ? apiFuseResult.value : []),
+		...(myrealtripResult.status === 'fulfilled' ? myrealtripResult.value : [])
+	]).slice(0, 8);
+
+	return activities.length ? activities : fallback;
+}
+
+async function getMyrealtripActivities(input: CandidateInput, statuses: ProviderStatus[]) {
 	const apiKey = env.MYREALTRIP_API_KEY;
 	if (!apiKey) {
 		statuses.push({
@@ -109,7 +122,7 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 			ok: false,
 			fallbackReason: 'MYREALTRIP_API_KEY is not configured'
 		});
-		return fallback;
+		return [];
 	}
 
 	try {
@@ -176,7 +189,7 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 
 		statuses.push({ provider: 'myrealtrip', configured: true, ok: candidates.length > 0 });
 		const enriched = await enrichActivityCandidates(input, candidates, apiKey);
-		return enriched.length ? enriched : fallback;
+		return enriched;
 	} catch (error) {
 		statuses.push({
 			provider: 'myrealtrip',
@@ -184,7 +197,7 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 			ok: false,
 			fallbackReason: error instanceof Error ? error.message : 'Myrealtrip request failed'
 		});
-		return fallback;
+		return [];
 	}
 }
 
@@ -201,69 +214,79 @@ async function getRestaurants(input: CandidateInput, statuses: ProviderStatus[])
 		return fallback;
 	}
 
-	try {
-		const response = await loggedFetch({
-			provider: 'api_fuse',
-			kind: 'api',
-			operation: 'catchtable.search',
-			url: `${APIFUSE_BASE}/v1/catchtable/search`,
-			init: {
-				method: 'POST',
-				headers: {
-					authorization: `Bearer ${apiKey}`,
-					'content-type': 'application/json'
-				},
-				body: JSON.stringify({
-					keyword: input.session.companionConstraints.hasBaby
-						? '키즈 프렌들리 카페'
-						: '캐주얼 다이닝',
-					lat: input.session.location?.lat,
-					lon: input.session.location?.lng,
-					limit: 8,
-					offset: 0,
-					sort: 'recommended'
-				}),
-				signal: AbortSignal.timeout(9000)
-			}
-		});
-		if (!response.ok) throw new Error(`API Fuse CatchTable ${response.status}`);
+	const [catchtableResult, localResult, yogiyoResult] = await Promise.allSettled([
+		getCatchtableRestaurants(input, apiKey),
+		getApiFuseRestaurantPlaces(input, apiKey),
+		getYogiyoRestaurants(input, apiKey)
+	]);
+	const restaurants = dedupeRestaurants([
+		...(catchtableResult.status === 'fulfilled' ? catchtableResult.value : []),
+		...(localResult.status === 'fulfilled' ? localResult.value : []),
+		...(yogiyoResult.status === 'fulfilled' ? yogiyoResult.value : [])
+	]).slice(0, 8);
 
-		const payload = (await response.json()) as { data?: unknown; items?: unknown[] };
-		const rows = arrayFromPayload(payload);
-		const restaurants = rows.map((row, index): RestaurantCandidate => {
-			const item = row as Record<string, unknown>;
-			const shopRef = stringValue(item.shopRef) || stringValue(item.id) || `catchtable-${index}`;
-			const outboundUrl = stringValue(item.url) || catchtableShopUrl(shopRef);
-			const lat = numberValue(item.lat) ?? numberValue(item.latitude);
-			const lng = numberValue(item.lon) ?? numberValue(item.lng) ?? numberValue(item.longitude);
-			return {
-				id: shopRef,
-				title: stringValue(item.name) || stringValue(item.shopName) || '캐치테이블 맛집',
-				price: numberValue(item.averagePrice),
-				source: 'api_fuse',
-				outboundUrl,
-				reservationUrl: outboundUrl,
-				mapUrl: kakaoSearchUrl(stringValue(item.name) || stringValue(item.shopName) || shopRef),
-				address: stringValue(item.address) || stringValue(item.roadAddress),
-				lat,
-				lng,
-				tags: ['예약 후보', '맛집'],
-				reservationHint: '예약 가능 시간 확인 필요'
-			};
-		});
+	statuses.push({
+		provider: 'api_fuse',
+		configured: true,
+		ok: restaurants.length > 0,
+		fallbackReason: restaurants.length ? undefined : 'API Fuse restaurants returned no candidates'
+	});
 
-		statuses.push({ provider: 'api_fuse', configured: true, ok: restaurants.length > 0 });
-		const enriched = await enrichRestaurants(input, restaurants, apiKey);
-		return enriched.length ? enriched : fallback;
-	} catch (error) {
-		statuses.push({
-			provider: 'api_fuse',
-			configured: true,
-			ok: false,
-			fallbackReason: error instanceof Error ? error.message : 'API Fuse request failed'
-		});
-		return fallback;
-	}
+	return restaurants.length ? restaurants : fallback;
+}
+
+async function getCatchtableRestaurants(input: CandidateInput, apiKey: string) {
+	const response = await loggedFetch({
+		provider: 'api_fuse',
+		kind: 'api',
+		operation: 'catchtable.search',
+		url: `${APIFUSE_BASE}/v1/catchtable/search`,
+		init: {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${apiKey}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				keyword: input.session.companionConstraints.hasBaby
+					? '키즈 프렌들리 카페'
+					: '캐주얼 다이닝',
+				lat: input.session.location?.lat,
+				lon: input.session.location?.lng,
+				limit: 8,
+				offset: 0,
+				sort: 'recommended'
+			}),
+			signal: AbortSignal.timeout(9000)
+		}
+	});
+	if (!response.ok) throw new Error(`API Fuse CatchTable ${response.status}`);
+
+	const payload = (await response.json()) as { data?: unknown; items?: unknown[] };
+	const rows = arrayFromPayload(payload);
+	const restaurants = rows.map((row, index): RestaurantCandidate => {
+		const item = row as Record<string, unknown>;
+		const shopRef = stringValue(item.shopRef) || stringValue(item.id) || `catchtable-${index}`;
+		const outboundUrl = stringValue(item.url) || catchtableShopUrl(shopRef);
+		const lat = numberValue(item.lat) ?? numberValue(item.latitude);
+		const lng = numberValue(item.lon) ?? numberValue(item.lng) ?? numberValue(item.longitude);
+		return {
+			id: shopRef,
+			title: stringValue(item.name) || stringValue(item.shopName) || '캐치테이블 맛집',
+			price: numberValue(item.averagePrice),
+			source: 'api_fuse',
+			outboundUrl,
+			reservationUrl: outboundUrl,
+			mapUrl: kakaoSearchUrl(stringValue(item.name) || stringValue(item.shopName) || shopRef),
+			address: stringValue(item.address) || stringValue(item.roadAddress),
+			lat,
+			lng,
+			tags: ['예약 후보', '맛집'],
+			reservationHint: '예약 가능 시간 확인 필요'
+		};
+	});
+
+	return enrichRestaurants(input, restaurants, apiKey);
 }
 
 async function getWeather(input: CandidateInput): Promise<WeatherCandidate> {
@@ -278,11 +301,61 @@ async function getWeather(input: CandidateInput): Promise<WeatherCandidate> {
 	if (!apiKey) return fallback;
 
 	try {
+		const [weatherResult, airResult] = await Promise.allSettled([
+			loggedFetch({
+				provider: 'api_fuse',
+				kind: 'api',
+				operation: 'kma.weather_by_address',
+				url: `${APIFUSE_BASE}/v1/kma-forecast/weather-by-address`,
+				init: {
+					method: 'POST',
+					headers: {
+						authorization: `Bearer ${apiKey}`,
+						'content-type': 'application/json'
+					},
+					body: JSON.stringify({
+						address: input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울'
+					}),
+					signal: AbortSignal.timeout(3500)
+				}
+			}),
+			getAirQuality(input, apiKey)
+		]);
+		if (weatherResult.status === 'rejected') throw weatherResult.reason;
+		const response = weatherResult.value;
+		if (!response.ok) throw new Error(`API Fuse KMA ${response.status}`);
+
+		const payload = (await response.json()) as Record<string, unknown>;
+		const text = JSON.stringify(payload);
+		const air = airResult.status === 'fulfilled' ? airResult.value : null;
+		const isRain = /비|rain|shower/i.test(text);
+		const isDust =
+			/미세|dust|pm10|pm2/i.test(text) || air?.grade === 'bad' || air?.grade === 'very_bad';
+		const condition: WeatherCandidate['condition'] = isRain ? 'rain' : isDust ? 'dust' : 'cloudy';
+		const airLabel = air?.label ? ` · ${air.label}` : '';
+		return {
+			label: `${isRain ? '비 예보' : isDust ? '미세먼지 확인' : '날씨 확인됨'}${airLabel}`,
+			condition,
+			preferIndoor: isRain || isDust,
+			source: 'api_fuse'
+		};
+	} catch {
+		return fallback;
+	}
+}
+
+async function getAirQuality(input: CandidateInput, apiKey: string) {
+	const stationName = airKoreaStationName(
+		input.session.location?.label ?? input.profile.recentLocation?.label
+	);
+	if (!stationName) return null;
+
+	try {
 		const response = await loggedFetch({
 			provider: 'api_fuse',
 			kind: 'api',
-			operation: 'kma.weather_by_address',
-			url: `${APIFUSE_BASE}/v1/kma-forecast/weather-by-address`,
+			operation: 'airkorea.realtime',
+			url: `${APIFUSE_BASE}/v1/airkorea-realtime/realtime`,
 			init: {
 				method: 'POST',
 				headers: {
@@ -290,26 +363,27 @@ async function getWeather(input: CandidateInput): Promise<WeatherCandidate> {
 					'content-type': 'application/json'
 				},
 				body: JSON.stringify({
-					address: input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울'
+					stationName,
+					dataTerm: 'DAILY'
 				}),
 				signal: AbortSignal.timeout(3500)
 			}
 		});
-		if (!response.ok) throw new Error(`API Fuse KMA ${response.status}`);
+		if (!response.ok) return null;
 
 		const payload = (await response.json()) as Record<string, unknown>;
-		const text = JSON.stringify(payload);
-		const isRain = /비|rain|shower/i.test(text);
-		const isDust = /미세|dust|pm10|pm2/i.test(text);
-		const condition: WeatherCandidate['condition'] = isRain ? 'rain' : isDust ? 'dust' : 'cloudy';
+		const data = payload.data as Record<string, unknown> | undefined;
+		const pm10 = data?.pm10 as Record<string, unknown> | undefined;
+		const pm25 = data?.pm25 as Record<string, unknown> | undefined;
+		const grade = stringValue(pm25?.grade) || stringValue(pm10?.grade);
+		const label = airQualityLabel(grade);
+		if (!label) return null;
 		return {
-			label: isRain ? '비 예보' : isDust ? '미세먼지 확인' : '날씨 확인됨',
-			condition,
-			preferIndoor: isRain || isDust,
-			source: 'api_fuse'
+			grade,
+			label
 		};
 	} catch {
-		return fallback;
+		return null;
 	}
 }
 
@@ -332,6 +406,8 @@ async function getMobility(
 	const results: MobilityCandidate[] = [];
 	const apifuseRoute = await getKakaoRoute(input, destination);
 	if (apifuseRoute) results.push(apifuseRoute);
+	const parking = await getParkingCandidate(input, destination);
+	if (parking) results.push(parking);
 	if (!apiKey || input.session.location?.lat == null || input.session.location.lng == null) {
 		statuses.push({
 			provider: 'swing',
@@ -383,6 +459,25 @@ async function getMobility(
 	}
 }
 
+async function getApiFuseActivityCandidates(input: CandidateInput) {
+	const apiKey = env.API_FUSE_API_KEY;
+	if (!apiKey) return [];
+	const queries = apiFuseActivityQueries(input).slice(0, 3);
+	const results = await Promise.allSettled(
+		queries.flatMap((query) => [
+			searchKakaoPlaces(input, query, apiKey, 4),
+			searchNaverPlaces(input, query, apiKey, 4)
+		])
+	);
+
+	return dedupeActivities(
+		results
+			.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+			.map((row, index) => placeRowToActivity(row, index))
+			.filter((candidate): candidate is ActivityCandidate => Boolean(candidate))
+	).slice(0, 8);
+}
+
 async function enrichActivityCandidates(
 	input: CandidateInput,
 	candidates: ActivityCandidate[],
@@ -432,6 +527,76 @@ async function enrichRestaurants(
 			};
 		})
 	);
+}
+
+async function getApiFuseRestaurantPlaces(input: CandidateInput, apiKey: string) {
+	const queries = restaurantPlaceQueries(input).slice(0, 3);
+	const results = await Promise.allSettled(
+		queries.flatMap((query) => [
+			searchKakaoPlaces(input, query, apiKey, 4),
+			searchNaverPlaces(input, query, apiKey, 4)
+		])
+	);
+
+	return dedupeRestaurants(
+		results
+			.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+			.map((row, index) => placeRowToRestaurant(row, index))
+			.filter((candidate): candidate is RestaurantCandidate => Boolean(candidate))
+	).slice(0, 8);
+}
+
+async function getYogiyoRestaurants(input: CandidateInput, apiKey: string) {
+	if (input.session.location?.lat == null || input.session.location.lng == null) return [];
+
+	const response = await loggedFetch({
+		provider: 'api_fuse',
+		kind: 'api',
+		operation: 'yogiyo.find_restaurants',
+		url: `${APIFUSE_BASE}/v1/yogiyo-api/find-restaurants`,
+		init: {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${apiKey}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				keyword: input.session.companionConstraints.hasBaby ? '키즈' : '맛집',
+				category: '',
+				address: input.session.location?.label ?? '',
+				lat: input.session.location.lat,
+				lng: input.session.location.lng,
+				sort: 'distance',
+				limit: 5
+			}),
+			signal: AbortSignal.timeout(4500)
+		}
+	});
+	if (!response.ok) throw new Error(`Yogiyo restaurants ${response.status}`);
+
+	const rows = arrayFromPayload((await response.json()) as { data?: unknown; items?: unknown[] });
+	return rows.map((row, index): RestaurantCandidate => {
+		const item = row as Record<string, unknown>;
+		const minOrder = numberValue(item.min_order_amount);
+		const deliveryFee = numberValue(item.delivery_fee);
+		const deliveryMinutes =
+			numberValue(item.estimated_delivery_minutes) ??
+			numberValue(item.estimated_delivery_max_minutes);
+		return {
+			id: `yogiyo-${stringValue(item.shop_id) || index}`,
+			title: stringValue(item.name) || '요기요 음식점',
+			price: minOrder ? minOrder + (deliveryFee ?? 0) : undefined,
+			source: 'api_fuse',
+			outboundUrl: stringValue(item.web_url) || yogiyoSearchUrl(input.session.location?.label),
+			mapUrl: kakaoSearchUrl(stringValue(item.name) || '요기요 음식점'),
+			address: stringValue(item.address),
+			lat: numberValue(item.lat),
+			lng: numberValue(item.lng),
+			availabilityText: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined,
+			tags: ['요기요', '배달 fallback', ...(item.is_open === false ? ['영업 확인 필요'] : [])],
+			reservationHint: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined
+		};
+	});
 }
 
 async function getMyrealtripAvailability(
@@ -516,56 +681,91 @@ async function getCatchtableAvailability(
 }
 
 async function findKakaoPlace(input: CandidateInput, query: string, apiKey: string) {
-	if (input.session.location?.lat == null || input.session.location.lng == null) return null;
+	const [kakaoRows, naverRows] = await Promise.allSettled([
+		searchKakaoPlaces(input, query, apiKey, 5),
+		searchNaverPlaces(input, query, apiKey, 5)
+	]);
+	const rows = [
+		...(kakaoRows.status === 'fulfilled' ? kakaoRows.value : []),
+		...(naverRows.status === 'fulfilled' ? naverRows.value : [])
+	];
+	const first = rows[0];
+	if (!first) return null;
+	return placeRowToGeo(first, query);
+}
 
-	try {
-		const response = await loggedFetch({
-			provider: 'api_fuse',
-			kind: 'api',
-			operation: 'kakaomap.search',
-			url: `${APIFUSE_BASE}/v1/kakaomap-api/search`,
-			init: {
-				method: 'POST',
-				headers: {
-					authorization: `Bearer ${apiKey}`,
-					'content-type': 'application/json'
-				},
-				body: JSON.stringify({
-					query,
-					lat: input.session.location.lat,
-					lng: input.session.location.lng,
-					radius: 5000,
-					page: 1,
-					page_size: 5
-				}),
-				signal: AbortSignal.timeout(2500)
-			}
-		});
-		if (!response.ok) throw new Error(`KakaoMap search ${response.status}`);
+async function searchKakaoPlaces(
+	input: CandidateInput,
+	query: string,
+	apiKey: string,
+	pageSize = 5
+) {
+	if (input.session.location?.lat == null || input.session.location.lng == null) return [];
 
-		const rows = arrayFromPayload((await response.json()) as { data?: unknown; items?: unknown[] });
-		const first = rows[0] as Record<string, unknown> | undefined;
-		if (!first) return null;
-		const title = stringValue(first.name) || stringValue(first.placeName) || query;
-		const lat = numberValue(first.lat) ?? numberValue(first.y) ?? numberValue(first.latitude);
-		const lng = numberValue(first.lng) ?? numberValue(first.x) ?? numberValue(first.longitude);
-		return {
-			title,
-			address:
-				stringValue(first.address) ||
-				stringValue(first.roadAddress) ||
-				stringValue(first.road_address_name),
-			lat,
-			lng,
-			mapUrl:
-				stringValue(first.place_url) ||
-				stringValue(first.placeUrl) ||
-				stringValue(first.url) ||
-				kakaoSearchUrl(title)
-		};
-	} catch {
-		return null;
-	}
+	const response = await loggedFetch({
+		provider: 'api_fuse',
+		kind: 'api',
+		operation: 'kakaomap.search',
+		url: `${APIFUSE_BASE}/v1/kakaomap-api/search`,
+		init: {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${apiKey}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				query,
+				lat: input.session.location.lat,
+				lng: input.session.location.lng,
+				radius: 5000,
+				page: 1,
+				page_size: pageSize
+			}),
+			signal: AbortSignal.timeout(2500)
+		}
+	});
+	if (!response.ok) throw new Error(`KakaoMap search ${response.status}`);
+
+	return arrayFromPayload((await response.json()) as { data?: unknown; items?: unknown[] }).map(
+		(row) => ({
+			...(row as Record<string, unknown>),
+			_provider: 'kakao'
+		})
+	);
+}
+
+async function searchNaverPlaces(input: CandidateInput, query: string, apiKey: string, size = 5) {
+	if (input.session.location?.lat == null || input.session.location.lng == null) return [];
+
+	const response = await loggedFetch({
+		provider: 'api_fuse',
+		kind: 'api',
+		operation: 'navermap.search',
+		url: `${APIFUSE_BASE}/v1/naver-map-api/search`,
+		init: {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${apiKey}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				query,
+				lat: input.session.location.lat,
+				lng: input.session.location.lng,
+				page: 1,
+				size
+			}),
+			signal: AbortSignal.timeout(2500)
+		}
+	});
+	if (!response.ok) throw new Error(`NaverMap search ${response.status}`);
+
+	return arrayFromPayload((await response.json()) as { data?: unknown; items?: unknown[] }).map(
+		(row) => ({
+			...(row as Record<string, unknown>),
+			_provider: 'naver'
+		})
+	);
 }
 
 async function getKakaoRoute(
@@ -695,6 +895,62 @@ async function getTaxiEta(
 	}
 }
 
+async function getParkingCandidate(
+	input: CandidateInput,
+	destination?: GeoCandidate
+): Promise<MobilityCandidate | null> {
+	const apiKey = env.API_FUSE_API_KEY;
+	if (!apiKey || input.session.location?.lat == null || input.session.location.lng == null)
+		return null;
+
+	try {
+		const response = await loggedFetch({
+			provider: 'api_fuse',
+			kind: 'api',
+			operation: 'modu_parking.search',
+			url: `${APIFUSE_BASE}/v1/modu-parking/search-parking`,
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${apiKey}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					location: destination?.address ?? destination?.title ?? input.session.location.label,
+					lat: destination?.lat ?? input.session.location.lat,
+					lng: destination?.lng ?? input.session.location.lng
+				}),
+				signal: AbortSignal.timeout(3500)
+			}
+		});
+		if (!response.ok) throw new Error(`Modu Parking ${response.status}`);
+
+		const payload = (await response.json()) as Record<string, unknown>;
+		const data = payload.data as Record<string, unknown> | undefined;
+		const rows = Array.isArray(data?.items) ? (data.items as Record<string, unknown>[]) : [];
+		const firstPurchasable =
+			rows.find((row) => row.is_purchasable === true) ??
+			rows.find((row) => row.has_realtime === true);
+		if (!firstPurchasable) return null;
+		const name = stringValue(firstPurchasable.parkinglot_name) || '주차장';
+		const price = stringValue(firstPurchasable.price_display);
+		return {
+			label: price ? `주차 ${price}` : '주차 후보 확인됨',
+			mode: 'car',
+			routeMapUrl: routeMapUrl(input.session.location, {
+				title: name,
+				lat: numberValue(firstPurchasable.lat),
+				lng: numberValue(firstPurchasable.lng),
+				address: stringValue(firstPurchasable.address)
+			}),
+			detail: `${name}${price ? ` · ${price}` : ''}`,
+			source: 'api_fuse'
+		};
+	} catch {
+		return null;
+	}
+}
+
 function fallbackActivities(input: CandidateInput): ActivityCandidate[] {
 	const baby = input.session.companionConstraints.hasBaby;
 	const freeformKeyword = freeformActivityKeyword(input.profile);
@@ -777,6 +1033,148 @@ function numberValue(value: unknown) {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function apiFuseActivityQueries(input: CandidateInput) {
+	const location = input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울';
+	const freeformKeyword = freeformActivityKeyword(input.profile);
+	const baby = input.session.companionConstraints.hasBaby;
+	const base = baby
+		? [`${location} 키즈카페`, `${location} 실내놀이터`, `${location} 유모차 실내`]
+		: input.profile.activityPreferences.includes('culture')
+			? [`${location} 전시`, `${location} 팝업`, `${location} 공연`]
+			: [`${location} 원데이클래스`, `${location} 체험`, `${location} 산책`];
+	return [
+		...new Set([freeformKeyword, ...base].filter((value): value is string => Boolean(value)))
+	];
+}
+
+function restaurantPlaceQueries(input: CandidateInput) {
+	const location = input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울';
+	const baby = input.session.companionConstraints.hasBaby;
+	return baby
+		? [`${location} 키즈 프렌들리 카페`, `${location} 가족 식당`, `${location} 넓은 좌석 카페`]
+		: [`${location} 맛집`, `${location} 카페`, `${location} 캐주얼 다이닝`];
+}
+
+function placeRowToGeo(row: Record<string, unknown>, fallbackTitle: string): GeoCandidate | null {
+	const title = stringValue(row.name) || stringValue(row.placeName) || fallbackTitle;
+	const lat = numberValue(row.lat) ?? numberValue(row.y) ?? numberValue(row.latitude);
+	const lng = numberValue(row.lng) ?? numberValue(row.x) ?? numberValue(row.longitude);
+	const address =
+		stringValue(row.roadAddress) ||
+		stringValue(row.road_address_name) ||
+		stringValue(row.address) ||
+		stringValue(row.address_name);
+	const mapUrl =
+		stringValue(row.naverMapUrl) ||
+		stringValue(row.place_url) ||
+		stringValue(row.placeUrl) ||
+		stringValue(row.url) ||
+		kakaoSearchUrl(title);
+	if (!title) return null;
+	return { title, lat, lng, address, mapUrl };
+}
+
+function placeRowToActivity(row: Record<string, unknown>, index: number): ActivityCandidate | null {
+	const geo = placeRowToGeo(row, '장소 후보');
+	if (!geo?.title) return null;
+	const provider = stringValue(row._provider);
+	const category = stringValue(row.category);
+	const id =
+		stringValue(row.confirm_id) ||
+		stringValue(row.id) ||
+		`${provider || 'place'}-activity-${index}`;
+	return {
+		id,
+		title: geo.title,
+		source: 'api_fuse',
+		outboundUrl: geo.mapUrl,
+		mapUrl: geo.mapUrl,
+		address: geo.address,
+		lat: geo.lat,
+		lng: geo.lng,
+		availabilityText: '지도 장소 후보 확인됨',
+		tags: [
+			provider === 'naver' ? '네이버지도' : '카카오맵',
+			category || '장소 후보',
+			'APIFuse'
+		].filter(Boolean)
+	};
+}
+
+function placeRowToRestaurant(
+	row: Record<string, unknown>,
+	index: number
+): RestaurantCandidate | null {
+	const geo = placeRowToGeo(row, '식당 후보');
+	if (!geo?.title) return null;
+	const provider = stringValue(row._provider);
+	const category = stringValue(row.category);
+	const id =
+		stringValue(row.confirm_id) ||
+		stringValue(row.id) ||
+		`${provider || 'place'}-restaurant-${index}`;
+	return {
+		id,
+		title: geo.title,
+		source: 'api_fuse',
+		outboundUrl: geo.mapUrl,
+		mapUrl: geo.mapUrl,
+		address: geo.address,
+		lat: geo.lat,
+		lng: geo.lng,
+		availabilityText: '지도 장소 후보 확인됨',
+		tags: [
+			provider === 'naver' ? '네이버지도' : '카카오맵',
+			category || '맛집 후보',
+			'APIFuse'
+		].filter(Boolean),
+		reservationHint: '지도 상세 확인'
+	};
+}
+
+function dedupeActivities(candidates: ActivityCandidate[]) {
+	const seen = new Set<string>();
+	return candidates.filter((candidate) => {
+		const key = `${candidate.title}-${candidate.address ?? ''}`.replace(/\s/g, '').toLowerCase();
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function dedupeRestaurants(candidates: RestaurantCandidate[]) {
+	const seen = new Set<string>();
+	return candidates.filter((candidate) => {
+		const key = `${candidate.title}-${candidate.address ?? ''}`.replace(/\s/g, '').toLowerCase();
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function airKoreaStationName(locationLabel?: string) {
+	if (!locationLabel) return '';
+	const stationMatch = locationLabel.match(
+		/(강남구|강동구|강북구|강서구|관악구|광진구|구로구|금천구|노원구|도봉구|동대문구|동작구|마포구|서대문구|서초구|성동구|성북구|송파구|양천구|영등포구|용산구|은평구|종로구|중구|중랑구)/
+	);
+	if (stationMatch?.[1]) return stationMatch[1];
+	if (/성수|서울숲|뚝섬/.test(locationLabel)) return '성동구';
+	if (/홍대|합정|망원|상암/.test(locationLabel)) return '마포구';
+	if (/강남|역삼|삼성|압구정|청담/.test(locationLabel)) return '강남구';
+	if (/잠실|송파/.test(locationLabel)) return '송파구';
+	if (/종로|광화문|안국/.test(locationLabel)) return '종로구';
+	if (/서울/.test(locationLabel)) return '중구';
+	return '';
+}
+
+function airQualityLabel(grade: string) {
+	if (grade === 'good') return '대기질 좋음';
+	if (grade === 'moderate') return '대기질 보통';
+	if (grade === 'bad') return '미세먼지 나쁨';
+	if (grade === 'very_bad') return '미세먼지 매우 나쁨';
+	return '';
+}
+
 function myrealtripSearchKeywords(input: CandidateInput) {
 	const locationKeyword = input.session.location?.label.includes('서울') ? '서울' : '';
 	const freeformKeyword = freeformActivityKeyword(input.profile);
@@ -786,7 +1184,11 @@ function myrealtripSearchKeywords(input: CandidateInput) {
 			? '티켓'
 			: '체험';
 	return [
-		...new Set([locationKeyword, freeformKeyword, preferenceKeyword, '티켓'].filter(Boolean))
+		...new Set(
+			[locationKeyword, freeformKeyword, preferenceKeyword, '티켓'].filter(
+				(value): value is string => Boolean(value)
+			)
+		)
 	];
 }
 
@@ -820,6 +1222,11 @@ function catchtableShopUrl(shopRef: string) {
 	return shopRef && !shopRef.startsWith('catchtable-')
 		? `https://app.catchtable.co.kr/ct/shop/${encodeURIComponent(shopRef)}`
 		: 'https://app.catchtable.co.kr';
+}
+
+function yogiyoSearchUrl(location?: string) {
+	const query = location ? `${location} 맛집` : '맛집';
+	return `https://www.yogiyo.co.kr/mobile/#/?search=${encodeURIComponent(query)}`;
 }
 
 function routeMapUrl(origin: RecommendationSession['location'], destination?: GeoCandidate) {
