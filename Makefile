@@ -21,13 +21,21 @@ CONTAINER_RUNTIME ?= $(shell \
 
 DATABASE_PATH := $(INFRA_PATH)/database
 MIGRATIONS_PATH := $(DATABASE_PATH)/migration
+APP_PATH := $(PROJECT_ROOT)/app
+APP_HOST ?= 127.0.0.1
+APP_PORT ?= 5174
+DB_SCHEMA ?= $(or $(FLYWAY_DEFAULT_SCHEMA),sai)
+FLYWAY_SCHEMAS ?= $(DB_SCHEMA)
+FLYWAY_DEFAULT_SCHEMA ?= $(DB_SCHEMA)
+DATABASE_URL ?= postgres://$(DB_USERNAME):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)
+export VOLUME_PATH
 COMPOSE := $(CONTAINER_RUNTIME) compose \
 	--project-directory $(PROJECT_ROOT) \
 	--env-file $(ENV_FILE) \
 	-f $(INFRA_PATH)/docker/docker-compose.yaml \
 	-p $(PROJECT)
 
-.PHONY: help env-show env-validate volume-init container-up container-down container-ps container-logs container-wait container-clean flyway-migrate flyway-info flyway-validate flyway-repair
+.PHONY: help env-show env-validate volume-init container-up container-down container-ps container-logs container-wait container-clean db-psql db-schema-info server-dev server-check server-build flyway-migrate flyway-info flyway-validate flyway-repair
 
 help: ## Show this help message
 	@echo "Available Commands:"
@@ -36,6 +44,9 @@ help: ## Show this help message
 	@echo ""
 	@echo "Usage Examples:"
 	@echo "  make container-up            # Start local PostgreSQL"
+	@echo "  make server-dev              # Start SvelteKit with local PostgreSQL"
+	@echo "  make db-schema-info          # Show tables in the configured schema"
+	@echo "  make db-psql                 # Open psql with the configured schema"
 	@echo "  make flyway-migrate          # Run Flyway migrations"
 	@echo "  make container-down          # Stop local containers"
 	@echo ""
@@ -52,6 +63,10 @@ env-show: ## Show current environment variables
 	@echo "DB Port:               $(DB_PORT)"
 	@echo "DB Name:               $(DB_NAME)"
 	@echo "DB Username:           $(DB_USERNAME)"
+	@echo "DB Schema:             $(DB_SCHEMA)"
+	@echo "Database URL:          postgres://$(DB_USERNAME):***@$(DB_HOST):$(DB_PORT)/$(DB_NAME)"
+	@echo "App Host:              $(APP_HOST)"
+	@echo "App Port:              $(APP_PORT)"
 	@echo "Flyway Schemas:        $(FLYWAY_SCHEMAS)"
 	@echo "Flyway Default Schema: $(FLYWAY_DEFAULT_SCHEMA)"
 	@echo "Volume Path:           $(VOLUME_PATH)"
@@ -64,6 +79,7 @@ env-validate: ## Validate required environment variables
 	@test -n "$(DB_NAME)" || (echo "DB_NAME not set" && exit 1)
 	@test -n "$(DB_USERNAME)" || (echo "DB_USERNAME not set" && exit 1)
 	@test -n "$(DB_PASSWORD)" || (echo "DB_PASSWORD not set" && exit 1)
+	@test -n "$(DB_SCHEMA)" || (echo "DB_SCHEMA not set" && exit 1)
 	@test -n "$(FLYWAY_SCHEMAS)" || (echo "FLYWAY_SCHEMAS not set" && exit 1)
 	@test -n "$(FLYWAY_DEFAULT_SCHEMA)" || (echo "FLYWAY_DEFAULT_SCHEMA not set" && exit 1)
 	@echo "All required variables are set."
@@ -105,8 +121,25 @@ container-clean: container-down ## Remove local database files and reinitialize
 	@$(MAKE) volume-init
 	@echo "Local volumes cleaned and reinitialized."
 
+db-psql: container-up container-wait ## Open psql with the configured schema search path
+	@$(COMPOSE) exec -e PGOPTIONS="-c search_path=$(DB_SCHEMA),public" postgres psql -U "$(DB_USERNAME)" -d "$(DB_NAME)"
+
+db-schema-info: container-up container-wait ## Show tables in the configured PostgreSQL schema
+	@$(COMPOSE) exec -T postgres psql -U "$(DB_USERNAME)" -d "$(DB_NAME)" -v ON_ERROR_STOP=1 -c "select table_schema, table_name from information_schema.tables where table_schema = '$(DB_SCHEMA)' order by table_name;"
+
+server-dev: container-up container-wait ## Start SvelteKit dev server with local PostgreSQL
+	@echo "Starting SAI app server on http://$(APP_HOST):$(APP_PORT)"
+	@echo "Using PostgreSQL $(DB_NAME).$(DB_SCHEMA) at $(DB_HOST):$(DB_PORT)"
+	@cd $(APP_PATH) && DATABASE_URL="$(DATABASE_URL)" bun run dev -- --host "$(APP_HOST)" --port "$(APP_PORT)" --strictPort
+
+server-check: ## Run SvelteKit type checks
+	@cd $(APP_PATH) && bun run check
+
+server-build: ## Build the SvelteKit app
+	@cd $(APP_PATH) && bun run build
+
 flyway-migrate: container-up container-wait ## Run database migrations
-	@echo "Running Flyway migrate ($(ENV))..."
+	@echo "Running Flyway migrate ($(ENV), schema $(FLYWAY_DEFAULT_SCHEMA))..."
 	@$(COMPOSE) run --rm flyway migrate
 	@echo "Database migrations completed."
 

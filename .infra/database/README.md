@@ -6,6 +6,9 @@ Local PostgreSQL and Flyway setup lives under `.infra`.
 
 ```bash
 make container-up
+make server-dev
+make db-schema-info
+make db-psql
 make flyway-migrate
 make container-ps
 make container-down
@@ -14,10 +17,14 @@ make container-down
 ## Defaults
 
 - PostgreSQL image: `postgres:18`
-- Database: `godlife`
-- User: `godlife`
+- Database: `sai`
+- User: `sai`
 - Local port: `5432`
+- App URL: `http://127.0.0.1:5174`
+- App `DATABASE_URL`: `postgres://sai:sai@127.0.0.1:5432/sai`
 - Flyway migration directory: `.infra/database/migration`
+- PostgreSQL schema: `sai`
+- Flyway schema: `sai`
 
 Add migrations using Flyway's configured naming format:
 
