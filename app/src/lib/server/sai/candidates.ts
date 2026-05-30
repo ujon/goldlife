@@ -113,41 +113,46 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 	}
 
 	try {
-		const keyword =
-			freeformActivityKeyword(input.profile) ??
-			(input.session.companionConstraints.hasBaby
-				? '키즈 실내 체험'
-				: input.profile.activityPreferences.includes('culture')
-					? '전시'
-					: '원데이클래스');
-		const response = await loggedFetch({
-			provider: 'myrealtrip',
-			kind: 'api',
-			operation: 'tna.search',
-			url: `${MYREALTRIP_BASE}/v1/products/tna/search`,
-			init: {
-				method: 'POST',
-				headers: {
-					authorization: `Bearer ${apiKey}`,
-					'content-type': 'application/json'
-				},
-				body: JSON.stringify({
-					keyword,
-					minPrice: 0,
-					maxPrice: input.session.budgetTotal ?? 100000,
-					sort: 'review',
-					page: 1,
-					size: 8
-				}),
-				signal: AbortSignal.timeout(3500)
-			}
-		});
-		if (!response.ok) throw new Error(`Myrealtrip ${response.status}`);
+		const searchKeywords = myrealtripSearchKeywords(input);
+		let payload:
+			| {
+					data?: { items?: Array<Record<string, unknown>> };
+			  }
+			| undefined;
+		let lastSearchError: unknown;
+		for (const keyword of searchKeywords) {
+			try {
+				const response = await loggedFetch({
+					provider: 'myrealtrip',
+					kind: 'api',
+					operation: 'tna.search',
+					url: `${MYREALTRIP_BASE}/v1/products/tna/search`,
+					init: {
+						method: 'POST',
+						headers: {
+							authorization: `Bearer ${apiKey}`,
+							'content-type': 'application/json'
+						},
+						body: JSON.stringify({
+							keyword,
+							page: 1,
+							size: 8
+						}),
+						signal: AbortSignal.timeout(6500)
+					}
+				});
+				if (!response.ok) throw new Error(`Myrealtrip ${response.status}`);
 
-		const payload = (await response.json()) as {
-			data?: { items?: Array<Record<string, unknown>> };
-		};
-		const items = payload.data?.items ?? [];
+				payload = (await response.json()) as {
+					data?: { items?: Array<Record<string, unknown>> };
+				};
+				if ((payload.data?.items ?? []).length > 0) break;
+			} catch (error) {
+				lastSearchError = error;
+			}
+		}
+		if (!payload && lastSearchError) throw lastSearchError;
+		const items = payload?.data?.items ?? [];
 		const candidates = items.map((item, index): ActivityCandidate => {
 			const gid = stringValue(item.gid) || `myrealtrip-${index}`;
 			const title =
@@ -216,9 +221,9 @@ async function getRestaurants(input: CandidateInput, statuses: ProviderStatus[])
 					lon: input.session.location?.lng,
 					limit: 8,
 					offset: 0,
-					sort: 'review'
+					sort: 'recommended'
 				}),
-				signal: AbortSignal.timeout(3500)
+				signal: AbortSignal.timeout(9000)
 			}
 		});
 		if (!response.ok) throw new Error(`API Fuse CatchTable ${response.status}`);
@@ -338,18 +343,20 @@ async function getMobility(
 	}
 
 	try {
-		const url = new URL('/v1/vehicles/search', base);
-		url.searchParams.set('lat', String(input.session.location.lat));
-		url.searchParams.set('lng', String(input.session.location.lng));
-		url.searchParams.set('radius', '1200');
-		url.searchParams.set('count', '5');
 		const response = await loggedFetch({
 			provider: 'swing',
 			kind: 'api',
 			operation: 'vehicles.search',
-			url,
+			url: new URL('/v1/vehicles/search', base),
 			init: {
-				headers: { 'x-api-key': apiKey },
+				method: 'POST',
+				headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
+				body: JSON.stringify({
+					lat: input.session.location.lat,
+					lng: input.session.location.lng,
+					radius: 1200,
+					count: 5
+				}),
 				signal: AbortSignal.timeout(2500)
 			}
 		});
@@ -488,11 +495,13 @@ async function getCatchtableAvailability(
 					'content-type': 'application/json'
 				},
 				body: JSON.stringify({
-					shopRef: restaurant.id,
+					shop_ref: restaurant.id,
 					date: selectedDate,
-					partySize: partyCount(input.session.situation)
+					person: partyCount(input.session.situation),
+					table_type: '_ALL_',
+					visit_time: visitTimeForReservation(input.session)
 				}),
-				signal: AbortSignal.timeout(2500)
+				signal: AbortSignal.timeout(10000)
 			}
 		});
 		if (!response.ok) throw new Error(`CatchTable availability ${response.status}`);
@@ -526,7 +535,8 @@ async function findKakaoPlace(input: CandidateInput, query: string, apiKey: stri
 					lat: input.session.location.lat,
 					lng: input.session.location.lng,
 					radius: 5000,
-					page: 1
+					page: 1,
+					page_size: 5
 				}),
 				signal: AbortSignal.timeout(2500)
 			}
@@ -547,7 +557,11 @@ async function findKakaoPlace(input: CandidateInput, query: string, apiKey: stri
 				stringValue(first.road_address_name),
 			lat,
 			lng,
-			mapUrl: stringValue(first.placeUrl) || stringValue(first.url) || kakaoSearchUrl(title)
+			mapUrl:
+				stringValue(first.place_url) ||
+				stringValue(first.placeUrl) ||
+				stringValue(first.url) ||
+				kakaoSearchUrl(title)
 		};
 	} catch {
 		return null;
@@ -577,6 +591,19 @@ async function getKakaoRoute(
 	const operation =
 		mode === 'car' ? 'car-directions' : mode === 'walk' ? 'walk-directions' : 'transit-directions';
 	try {
+		const routeBody: Record<string, string | number> = {
+			origin_lat: input.session.location.lat,
+			origin_lng: input.session.location.lng,
+			dest_lat: destination.lat,
+			dest_lng: destination.lng
+		};
+		if (mode === 'transit') {
+			routeBody.sort = 'time';
+			const departureTime = hhmmFromSession(input.session);
+			if (departureTime) routeBody.departure_time = departureTime;
+		}
+		if (mode === 'car') routeBody.priority = 'TIME';
+
 		const response = await loggedFetch({
 			provider: 'api_fuse',
 			kind: 'api',
@@ -588,12 +615,7 @@ async function getKakaoRoute(
 					authorization: `Bearer ${apiKey}`,
 					'content-type': 'application/json'
 				},
-				body: JSON.stringify({
-					startLat: input.session.location.lat,
-					startLng: input.session.location.lng,
-					endLat: destination.lat,
-					endLng: destination.lng
-				}),
+				body: JSON.stringify(routeBody),
 				signal: AbortSignal.timeout(3000)
 			}
 		});
@@ -755,6 +777,19 @@ function numberValue(value: unknown) {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function myrealtripSearchKeywords(input: CandidateInput) {
+	const locationKeyword = input.session.location?.label.includes('서울') ? '서울' : '';
+	const freeformKeyword = freeformActivityKeyword(input.profile);
+	const preferenceKeyword = input.session.companionConstraints.hasBaby
+		? '키즈'
+		: input.profile.activityPreferences.includes('culture')
+			? '티켓'
+			: '체험';
+	return [
+		...new Set([locationKeyword, freeformKeyword, preferenceKeyword, '티켓'].filter(Boolean))
+	];
+}
+
 function firstGeoCandidate(candidates: GeoCandidate[]) {
 	return candidates.find((candidate) => candidate.lat != null && candidate.lng != null);
 }
@@ -764,6 +799,17 @@ function selectedDateForReservation(session: RecommendationSession) {
 	if (Number.isNaN(source.getTime())) return '';
 	const pad = (value: number) => `${value}`.padStart(2, '0');
 	return `${source.getFullYear()}-${pad(source.getMonth() + 1)}-${pad(source.getDate())}`;
+}
+
+function visitTimeForReservation(session: RecommendationSession) {
+	return hhmmFromSession(session, ':') || '19:00';
+}
+
+function hhmmFromSession(session: RecommendationSession, separator = '') {
+	const source = session.startDateTime ? new Date(session.startDateTime) : new Date();
+	if (Number.isNaN(source.getTime())) return '';
+	const pad = (value: number) => `${value}`.padStart(2, '0');
+	return `${pad(source.getHours())}${separator}${pad(source.getMinutes())}`;
 }
 
 function kakaoSearchUrl(query: string) {
@@ -803,7 +849,9 @@ function transportLabel(mode: NonNullable<MobilityCandidate['mode']>) {
 function extractMinutes(text: string) {
 	const minuteMatch = text.match(/(?:minutes|min|durationMinutes|timeMinutes)"?\s*:\s*(\d+)/i);
 	if (minuteMatch?.[1]) return Number(minuteMatch[1]);
-	const secondMatch = text.match(/(?:seconds|durationSeconds|spendTime)"?\s*:\s*(\d+)/i);
+	const secondMatch = text.match(
+		/(?:seconds|durationSeconds|duration_sec|duration|spendTime)"?\s*:\s*(\d+)/i
+	);
 	if (secondMatch?.[1]) return Math.round(Number(secondMatch[1]) / 60);
 	return undefined;
 }
