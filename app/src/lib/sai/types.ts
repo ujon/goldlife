@@ -34,6 +34,22 @@ export type MbtiType =
 	| 'ENTJ'
 	| 'unknown';
 
+export type OnboardingQuestionId =
+	| 'activityPreferences'
+	| 'noveltyPreference'
+	| 'spendingStyle'
+	| 'riskTolerance'
+	| 'mobilityPreference'
+	| 'mbtiType';
+
+export type OnboardingFreeformAnswer = {
+	questionId: Exclude<OnboardingQuestionId, 'mbtiType'>;
+	question: string;
+	answer: string;
+	source: 'voice' | 'text';
+	createdAt: string;
+};
+
 export type LocationValue = {
 	mode: 'geo' | 'manual' | 'default';
 	label: string;
@@ -75,6 +91,7 @@ export type UserProfile = {
 	riskTolerance: string;
 	mobilityPreference: string;
 	mbtiType: MbtiType;
+	onboardingFreeformAnswers: OnboardingFreeformAnswer[];
 	recentLocation?: LocationValue;
 	updatedAt: string;
 };

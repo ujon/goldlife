@@ -17,6 +17,13 @@ type CandidateInput = {
 
 const MYREALTRIP_BASE = 'https://partner-ext-api.myrealtrip.com';
 const APIFUSE_BASE = 'https://api.apifuse.com';
+const freeformKeywordRules = [
+	{ pattern: /캠핑|글램핑|야영|camp/i, activity: '캠핑 글램핑 야외 체험' },
+	{ pattern: /등산|하이킹|트레킹|산에|산책/i, activity: '가벼운 트레킹 산책' },
+	{ pattern: /공연|전시|미술관|박물관/i, activity: '전시 공연' },
+	{ pattern: /공방|클래스|만들/i, activity: '원데이클래스' },
+	{ pattern: /맛집|식당|먹|카페/i, activity: '맛집 카페 투어' }
+];
 
 export async function collectCandidates(input: CandidateInput): Promise<CandidateBundle> {
 	const statuses: ProviderStatus[] = [];
@@ -95,11 +102,13 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 	}
 
 	try {
-		const keyword = input.session.companionConstraints.hasBaby
-			? '키즈 실내 체험'
-			: input.profile.activityPreferences.includes('culture')
-				? '전시'
-				: '원데이클래스';
+		const keyword =
+			freeformActivityKeyword(input.profile) ??
+			(input.session.companionConstraints.hasBaby
+				? '키즈 실내 체험'
+				: input.profile.activityPreferences.includes('culture')
+					? '전시'
+					: '원데이클래스');
 		const response = await loggedFetch({
 			provider: 'myrealtrip',
 			kind: 'api',
@@ -337,14 +346,19 @@ async function getMobility(
 
 function fallbackActivities(input: CandidateInput): ActivityCandidate[] {
 	const baby = input.session.companionConstraints.hasBaby;
+	const freeformKeyword = freeformActivityKeyword(input.profile);
 	return [
 		{
 			id: 'fallback-activity-1',
-			title: baby ? '영유아 동반 실내 체험관' : '실내 원데이 클래스',
+			title: baby
+				? '영유아 동반 실내 체험관'
+				: freeformKeyword
+					? `${freeformKeyword} 후보`
+					: '실내 원데이 클래스',
 			price: baby ? 18000 : 36000,
 			source: 'sai',
 			outboundUrl: 'https://map.kakao.com',
-			tags: baby ? ['유모차', '실내'] : ['예약 후보', '실내']
+			tags: baby ? ['유모차', '실내'] : ['온보딩 답변 반영', '예약 후보']
 		},
 		{
 			id: 'fallback-activity-2',
@@ -386,4 +400,9 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function freeformActivityKeyword(profile: UserProfile) {
+	const text = (profile.onboardingFreeformAnswers ?? []).map((answer) => answer.answer).join(' ');
+	return freeformKeywordRules.find((rule) => rule.pattern.test(text))?.activity;
 }

@@ -235,13 +235,19 @@ export function composeRecommendations(
 	const resultType = meta.type;
 	const location = session.location?.label ?? profile.recentLocation?.label ?? '현재 위치';
 	const answerValues = Object.values(session.dynamicAnswers);
+	const freeformText = onboardingFreeformText(profile);
 	const wantsIndoor =
 		session.weatherSnapshot.preferIndoor ||
 		answerValues.includes('prefer_indoor') ||
 		answerValues.includes('indoor_nature');
 	const wantsActivity =
-		answerValues.includes('shared_activity') || answerValues.includes('high_energy');
-	const wantsQuiet = answerValues.includes('quiet_reset') || answerValues.includes('talk_focused');
+		answerValues.includes('shared_activity') ||
+		answerValues.includes('high_energy') ||
+		/캠핑|글램핑|등산|하이킹|트레킹|체험|공방|클래스/i.test(freeformText);
+	const wantsQuiet =
+		answerValues.includes('quiet_reset') ||
+		answerValues.includes('talk_focused') ||
+		/조용|휴식|쉬|집/i.test(freeformText);
 
 	const cards = baby
 		? babyRecommendations(session, budget, people, location, resultType, wantsIndoor)
@@ -256,7 +262,7 @@ export function composeRecommendations(
 				wantsIndoor
 			);
 
-	return applyMbtiHints(cards, profile, baby);
+	return applyOnboardingFreeformHints(applyMbtiHints(cards, profile, baby), profile, session, baby);
 }
 
 function mbtiHint(profile: UserProfile, baby: boolean) {
@@ -282,6 +288,62 @@ function applyMbtiHints(cards: RecommendationCard[], profile: UserProfile, baby:
 		...item,
 		reason: `${item.reason} ${hint.reason}`,
 		badges: [...new Set([hint.badge, ...item.badges])].slice(0, 8)
+	}));
+}
+
+function onboardingFreeformText(profile: UserProfile) {
+	return (profile.onboardingFreeformAnswers ?? []).map((answer) => answer.answer).join(' ');
+}
+
+function applyOnboardingFreeformHints(
+	cards: RecommendationCard[],
+	profile: UserProfile,
+	session: RecommendationSession,
+	baby: boolean
+) {
+	const answers = profile.onboardingFreeformAnswers ?? [];
+	if (!answers.length) return cards;
+
+	const combined = onboardingFreeformText(profile);
+	const latest = answers[answers.length - 1];
+	const answerSnippet =
+		latest.answer.length > 34 ? `${latest.answer.slice(0, 34)}...` : latest.answer;
+	const reasonHint = `온보딩에서 "${answerSnippet}"라고 말한 것도 같이 반영했어.`;
+
+	if (!baby && /캠핑|글램핑|야영|camp/i.test(combined)) {
+		const weatherFit: RecommendationCard['weatherFit'] = session.weatherSnapshot.preferIndoor
+			? 'mostly_indoor'
+			: 'outdoor';
+		const campingCard = {
+			...cards[0],
+			label: session.weatherSnapshot.preferIndoor ? '캠핑 감성 실내픽' : '캠핑 취향 반영픽',
+			title: session.weatherSnapshot.preferIndoor
+				? '캠핑 감성 바비큐/글램핑 카페'
+				: '가벼운 캠핑/글램핑 체험',
+			reason: `${reasonHint} 날씨와 예산을 보면서 캠핑 감성은 살리고 준비 부담은 낮춘 후보를 먼저 뒀어.`,
+			weatherFit,
+			badges: [...new Set(['캠핑 취향', '온보딩 답변 반영', ...cards[0].badges])].slice(0, 8),
+			items: cards[0].items.map((item, index) =>
+				index === 0
+					? {
+							...item,
+							title: session.weatherSnapshot.preferIndoor
+								? '캠핑 감성 실내 바비큐'
+								: '글램핑 또는 당일 캠핑 체험',
+							source: item.source === 'sai' ? 'api_fuse' : item.source
+						}
+					: item
+			)
+		};
+
+		return [campingCard, ...cards.slice(1)];
+	}
+
+	return cards.map((item, index) => ({
+		...item,
+		reason: index === 0 ? `${item.reason} ${reasonHint}` : item.reason,
+		badges:
+			index === 0 ? [...new Set(['온보딩 답변 반영', ...item.badges])].slice(0, 8) : item.badges
 	}));
 }
 

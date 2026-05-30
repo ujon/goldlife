@@ -75,7 +75,7 @@ async function tryExaoneFollowups(
 						{
 							role: 'system',
 							content:
-								'사이(SAI)의 귀여운 한국어 코치다. 추천 전 추가 질문 1-2개만 JSON으로 만든다. 시간, 예산, MBTI, 이미 받은 동행 제약은 다시 묻지 않는다.'
+								'사이(SAI)의 귀여운 한국어 코치다. 추천 전 추가 질문 1-2개만 JSON으로 만든다. 시간, 예산, MBTI, 이미 받은 온보딩 자유 문장 답변과 동행 제약은 다시 묻지 않는다.'
 						},
 						{
 							role: 'user',
@@ -142,6 +142,7 @@ async function tryOpenAIFollowups(
 										'사이(SAI)의 추천 전 동적 추가 질문 생성기다.',
 										'질문은 1-2개만 만든다.',
 										'시간과 총 예산, MBTI는 이미 받았으므로 절대 다시 묻지 않는다.',
+										'profile.onboardingFreeformAnswers에 있는 온보딩 자유 문장 답변도 이미 받은 취향으로 보고 반복해서 묻지 않는다.',
 										'상황, 아기 동반 여부, 핵심 아기 편의도 이미 받았으므로 다시 묻지 말고 세부 조건만 보강한다.',
 										'짧고 친근한 반말 톤을 사용한다.'
 									].join('\n')

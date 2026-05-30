@@ -24,6 +24,9 @@
 		FollowupQuestion,
 		LocationSuggestion,
 		LocationValue,
+		MbtiType,
+		OnboardingFreeformAnswer,
+		OnboardingQuestionId,
 		RecommendationCard,
 		RecommendationHistoryItem,
 		RecommendationSession,
@@ -33,13 +36,7 @@
 	} from '$lib/sai/types';
 
 	type OnboardingQuestion = {
-		id:
-			| 'activityPreferences'
-			| 'noveltyPreference'
-			| 'spendingStyle'
-			| 'riskTolerance'
-			| 'mobilityPreference'
-			| 'mbtiType';
+		id: OnboardingQuestionId;
 		prompt: string;
 		options: Array<{ id: string; label: string; value: string }>;
 		multi?: boolean;
@@ -47,8 +44,12 @@
 		reaction: string;
 	};
 
-	type SpeechTarget = 'time' | 'budget' | 'followup';
-	type SpeechRecognitionLike = {
+	type KnownMbtiType = Exclude<MbtiType, '' | 'unknown'>;
+	type SpeechTarget = 'time' | 'budget' | 'followup' | 'onboarding';
+	type OnboardingVoiceOptions = {
+		readQuestion?: boolean;
+	};
+	type WebSpeechRecognition = {
 		lang: string;
 		interimResults: boolean;
 		maxAlternatives: number;
@@ -58,7 +59,7 @@
 		onerror: (() => void) | null;
 		onend: (() => void) | null;
 	};
-	type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+	type WebSpeechRecognitionConstructor = new () => WebSpeechRecognition;
 	type ServerAuthResult = {
 		user: {
 			id: string;
@@ -93,6 +94,9 @@
 		mode: 'default',
 		label: '서울 성수동'
 	};
+	const ONBOARDING_SILENCE_TIMEOUT_MS = 9000;
+	const WEB_SPEECH_TTS_ENABLED = true;
+	const spokenOnboardingQuestionIds: OnboardingQuestionId[] = [];
 	const mbtiOptions = [
 		'ISTJ',
 		'ISFJ',
@@ -111,13 +115,32 @@
 		'ENFJ',
 		'ENTJ'
 	].map((type) => ({ id: type.toLowerCase(), label: type, value: type }));
+	const validMbtiTypes = mbtiOptions.map((option) => option.value) as KnownMbtiType[];
+	const mbtiVoiceAliases: Record<KnownMbtiType, string[]> = {
+		ISTJ: ['아이에스티제이', '잇티제'],
+		ISFJ: ['아이에스에프제이', '잇프제'],
+		INFJ: ['아이엔에프제이', '인프제'],
+		INTJ: ['아이엔티제이', '인티제'],
+		ISTP: ['아이에스티피', '잇팁'],
+		ISFP: ['아이에스에프피', '잇프피'],
+		INFP: ['아이엔에프피', '인프피'],
+		INTP: ['아이엔티피', '인팁'],
+		ESTP: ['이에스티피', '엣팁'],
+		ESFP: ['이에스에프피', '엣프피'],
+		ENFP: ['이엔에프피', '엔프피'],
+		ENTP: ['이엔티피', '엔팁'],
+		ESTJ: ['이에스티제이', '엣티제'],
+		ESFJ: ['이에스에프제이', '엣프제'],
+		ENFJ: ['이엔에프제이', '엔프제'],
+		ENTJ: ['이엔티제이', '엔티제']
+	};
 
 	const onboardingQuestions: OnboardingQuestion[] = [
 		{
 			id: 'activityPreferences',
-			prompt: '쉬는 날엔 보통 뭐가 좋아?',
+			prompt: '쉬는 날엔 보통 뭐 하면서 보내?',
 			multi: true,
-			reaction: '좋아, 추천 후보에서 이 취향을 먼저 떠올릴게.',
+			reaction: '편하게 말해줘. 다음에 놀 거리 찾을 때 네 취향부터 떠올려볼게.',
 			options: [
 				{ id: 'food', label: '맛집', value: 'food' },
 				{ id: 'culture', label: '전시', value: 'culture' },
@@ -174,6 +197,40 @@
 			options: [...mbtiOptions, { id: 'unknown', label: '잘 모르겠어', value: 'unknown' }]
 		}
 	];
+	const onboardingAnswerAliases: Partial<
+		Record<OnboardingQuestion['id'], Record<string, string[]>>
+	> = {
+		activityPreferences: {
+			food: ['음식', '밥', '먹', '레스토랑', '식당'],
+			culture: ['문화', '미술관', '공연', '전시회'],
+			experience: ['클래스', '원데이', '만들기', '체험활동'],
+			walk: ['걷기', '공원', '산책하기'],
+			home: ['집', '집콕', '휴식', '쉬기']
+		},
+		noveltyPreference: {
+			high: ['새로운거', '새롭', '도전'],
+			medium: ['가끔', '보통'],
+			low: ['익숙', '편한']
+		},
+		spendingStyle: {
+			value: ['저렴', '아끼', '가성비'],
+			balanced: ['적당', '무난', '중간'],
+			premium: ['좋은곳', '비싸도', '프리미엄']
+		},
+		riskTolerance: {
+			safe: ['안전', '실패없는', '검증'],
+			balanced: ['균형', '반반', '적당'],
+			adventure: ['모험', '도전', '새로운']
+		},
+		mobilityPreference: {
+			near: ['근처', '가까', '동네'],
+			transit: ['대중교통', '지하철', '버스'],
+			far: ['멀어도', '멀리', '상관없']
+		},
+		mbtiType: {
+			unknown: ['unknown', '몰라', '모르겠어', '모름', '잘몰라', '잘모르겠어', '잘 모르겠어']
+		}
+	};
 
 	let screen = $state<Screen>('auth');
 	let authMode = $state<AuthMode>('login');
@@ -208,12 +265,56 @@
 	let listeningFor = $state<SpeechTarget | null>(null);
 	let speechTranscript = $state('');
 	let speechMessage = $state('');
+	let onboardingSpeaking = $state(false);
+	let onboardingVoicePaused = $state(false);
+	let onboardingIntroVisible = $state(false);
+	let onboardingAnswerInput = $state('');
+	let onboardingAnswerSource = $state<OnboardingFreeformAnswer['source']>('text');
+	let onboardingSpeechStatus = $state('');
 	let locationSearchTimer: ReturnType<typeof setTimeout> | null = null;
 	let locationSearchRequestId = 0;
+	let activeRecognition: WebSpeechRecognition | null = null;
+	let onboardingSilenceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let currentOnboardingQuestion = $derived(onboardingQuestions[onboardingIndex]);
+	let onboardingMascotState = $derived(
+		onboardingSpeaking ? 'talking' : listeningFor === 'onboarding' ? 'listening' : 'idle'
+	);
+	let currentOnboardingFreeformAnswer = $derived(
+		profile && currentOnboardingQuestion.id !== 'mbtiType'
+			? getOnboardingFreeformAnswer(profile, currentOnboardingQuestion.id)
+			: null
+	);
+	let onboardingAnswerPlaceholder = $derived(
+		currentOnboardingQuestion.id === 'mbtiType'
+			? '예: 나는 ENFP야 또는 잘 모르겠어'
+			: currentOnboardingQuestion
+				? `예: 나는 보통 캠핑 가`
+				: ''
+	);
+	let onboardingAnswerHelp = $derived(
+		currentOnboardingQuestion.id === 'mbtiType'
+			? 'MBTI는 문장 안에 INTP처럼 한 가지 유형만 들어가면 돼. 모르면 잘 모르겠어도 괜찮아.'
+			: currentOnboardingFreeformAnswer
+				? `저장된 답변: ${currentOnboardingFreeformAnswer.answer}`
+				: ''
+	);
+	let onboardingVoiceCaption = $derived(
+		onboardingSpeaking
+			? '질문 읽는 중이야.'
+			: listeningFor === 'onboarding'
+				? speechTranscript
+					? `들은 답변: ${speechTranscript}`
+					: '듣고 있어. 편하게 말해줘.'
+				: onboardingSpeechStatus
+	);
 	let onboardingAnswered = $derived(
 		profile ? isOnboardingAnswered(currentOnboardingQuestion, profile) : false
+	);
+	let onboardingCanContinue = $derived(
+		onboardingAnswerInput.trim()
+			? isPendingOnboardingAnswerReady(currentOnboardingQuestion, onboardingAnswerInput)
+			: onboardingAnswered
 	);
 	let selectedSituation = $derived(
 		situationOptions.find((option) => option.id === session.situation)
@@ -233,18 +334,16 @@
 		screen === 'generating' ? 'thinking' : screen === 'results' ? 'happy' : 'idle'
 	);
 	let progress = $derived(
-		getProgress(screen, onboardingIndex, followupIndex, followupQuestions.length)
+		screen === 'onboarding' && onboardingIntroVisible
+			? { current: 0, total: 0, label: '' }
+			: getProgress(screen, onboardingIndex, followupIndex, followupQuestions.length)
 	);
-	let progressDots = $derived(range(progress.total));
+	let progressPercent = $derived(
+		progress.total ? `${Math.min(100, (progress.current / progress.total) * 100)}%` : '0%'
+	);
 
 	function inputValue(event: Event) {
 		return (event.currentTarget as HTMLInputElement).value;
-	}
-
-	function range(length: number) {
-		const values: number[] = [];
-		for (let index = 0; index < length; index += 1) values.push(index);
-		return values;
 	}
 
 	function textareaValue(event: Event) {
@@ -385,17 +484,22 @@
 		session = createRecommendationSession(nextProfile.recentLocation ?? defaultLocation);
 		const missingIndex = firstUnansweredOnboardingIndex(nextProfile);
 		onboardingIndex = missingIndex === -1 ? 0 : missingIndex;
-		screen = !nextProfile.recentLocation
-			? 'location'
-			: isProfileOnboardingComplete(nextProfile)
-				? 'home'
-				: 'onboarding';
+		if (!nextProfile.recentLocation) {
+			screen = 'location';
+			return;
+		}
+		if (isProfileOnboardingComplete(nextProfile)) {
+			screen = 'home';
+			return;
+		}
+		openOnboarding(onboardingIndex);
 	}
 
 	function logout() {
 		currentUserId = '';
 		profile = null;
 		screen = 'auth';
+		onboardingIntroVisible = false;
 		authPassword = '';
 		authError = '';
 		recommendations = [];
@@ -512,11 +616,18 @@
 		saveProfile(nextProfile);
 		session = createRecommendationSession(location);
 		const missingIndex = firstUnansweredOnboardingIndex(nextProfile);
-		onboardingIndex = missingIndex === -1 ? 0 : missingIndex;
-		screen = isProfileOnboardingComplete(nextProfile) ? 'home' : 'onboarding';
+		if (isProfileOnboardingComplete(nextProfile)) {
+			onboardingIndex = missingIndex === -1 ? 0 : missingIndex;
+			resetOnboardingAnswerInput();
+			screen = 'home';
+			return;
+		}
+		openOnboarding(missingIndex === -1 ? 0 : missingIndex);
 	}
 
 	function isOnboardingAnswered(question: OnboardingQuestion, targetProfile: UserProfile) {
+		if (question.id === 'mbtiType') return Boolean(parseMbtiAnswer(targetProfile.mbtiType));
+		if (getOnboardingFreeformAnswer(targetProfile, question.id)) return true;
 		if (question.id === 'activityPreferences') return targetProfile.activityPreferences.length > 0;
 		return Boolean(targetProfile[question.id]);
 	}
@@ -533,33 +644,225 @@
 		);
 	}
 
-	function isOnboardingSelected(question: OnboardingQuestion, value: string) {
-		if (!profile) return false;
-		if (question.id === 'activityPreferences') return profile.activityPreferences.includes(value);
-		return profile[question.id] === value;
+	function isPendingOnboardingAnswerReady(question: OnboardingQuestion, value: string) {
+		const answer = value.trim();
+		if (!answer) return false;
+		if (question.id === 'mbtiType') return Boolean(parseMbtiAnswer(answer));
+		return true;
 	}
 
-	function selectOnboardingOption(question: OnboardingQuestion, value: string) {
-		if (!profile) return;
+	function commitOnboardingAnswerInput() {
+		if (!onboardingAnswerInput.trim()) return false;
+		if (listeningFor === 'onboarding') stopActiveRecognition();
+		return applyOnboardingFreeformAnswer(onboardingAnswerInput, onboardingAnswerSource);
+	}
 
-		if (question.id === 'activityPreferences') {
-			const selected = profile.activityPreferences.includes(value)
-				? profile.activityPreferences.filter((item) => item !== value)
-				: [...profile.activityPreferences, value];
+	function handleOnboardingAnswerInput(event: Event) {
+		onboardingAnswerInput = inputValue(event);
+		onboardingAnswerSource = 'text';
+		onboardingSpeechStatus = '';
+	}
 
-			const nextProfile = {
-				...profile,
-				activityPreferences: selected,
+	function handleOnboardingAnswerKeydown(event: KeyboardEvent) {
+		if (event.key !== 'Enter') return;
+		event.preventDefault();
+		continueOnboarding();
+	}
+
+	function applyOnboardingFreeformAnswer(text: string, source: 'voice' | 'text') {
+		if (!profile || !currentOnboardingQuestion) return false;
+		const answer = text.trim();
+		if (!answer) return false;
+		const matches = matchOnboardingOptions(currentOnboardingQuestion, text);
+
+		if (currentOnboardingQuestion.id === 'mbtiType') {
+			const selected = matches[0];
+			if (!selected) {
+				onboardingSpeechStatus =
+					'MBTI는 문장 안에 ENFP처럼 한 가지 유형만 포함하거나, 모르면 잘 모르겠어라고 입력해줘.';
+				return false;
+			}
+
+			const nextProfile = setSingleOnboardingAnswer(profile, 'mbtiType', selected.value);
+			profile = nextProfile;
+			onboardingSpeechStatus = onboardingSelectionStatus(currentOnboardingQuestion, [
+				selected.value
+			]);
+			saveProfile(nextProfile);
+			return true;
+		}
+
+		let nextProfile = upsertOnboardingFreeformAnswer(
+			profile,
+			currentOnboardingQuestion,
+			answer,
+			source
+		);
+
+		if (currentOnboardingQuestion.id === 'activityPreferences') {
+			const values = [
+				...new Set([...nextProfile.activityPreferences, ...matches.map((item) => item.value)])
+			];
+			nextProfile = {
+				...nextProfile,
+				activityPreferences: values,
 				updatedAt: new Date().toISOString()
 			};
 			profile = nextProfile;
+			onboardingSpeechStatus = matches.length
+				? `${onboardingSelectionStatus(currentOnboardingQuestion, values)} 문장 답변도 같이 저장했어.`
+				: '문장 답변으로 저장했어. 추천할 때 그대로 참고할게.';
 			saveProfile(nextProfile);
-			return;
+			return true;
 		}
 
-		const nextProfile = setSingleOnboardingAnswer(profile, question.id, value);
+		if (matches[0]) {
+			nextProfile = setSingleOnboardingAnswer(
+				nextProfile,
+				currentOnboardingQuestion.id,
+				matches[0].value
+			);
+		}
 		profile = nextProfile;
+		onboardingSpeechStatus = matches[0]
+			? `${onboardingSelectionStatus(currentOnboardingQuestion, [matches[0].value])} 문장 답변도 같이 저장했어.`
+			: '문장 답변으로 저장했어. 추천할 때 그대로 참고할게.';
 		saveProfile(nextProfile);
+		return true;
+	}
+
+	function matchOnboardingOptions(question: OnboardingQuestion, text: string) {
+		const normalized = normalizeAnswerText(text);
+		if (!normalized) return [];
+
+		if (question.id === 'mbtiType') {
+			const type = parseMbtiAnswer(text);
+			return type ? question.options.filter((option) => option.value === type) : [];
+		}
+
+		return question.options.filter((option) =>
+			onboardingOptionKeywords(question, option).some((keyword) =>
+				normalized.includes(normalizeAnswerText(keyword))
+			)
+		);
+	}
+
+	function onboardingOptionKeywords(
+		question: OnboardingQuestion,
+		option: OnboardingQuestion['options'][number]
+	) {
+		return [
+			option.label,
+			option.value,
+			...(onboardingAnswerAliases[question.id]?.[option.id] ?? [])
+		];
+	}
+
+	function normalizeAnswerText(value: string) {
+		return value.toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
+	}
+
+	function parseMbtiAnswer(value: string): MbtiType {
+		const mentionedTypes = findMentionedMbtiTypes(value);
+		if (mentionedTypes.length === 1) return mentionedTypes[0];
+		if (mentionedTypes.length > 1) return '';
+		return isUnknownMbtiAnswer(value) ? 'unknown' : '';
+	}
+
+	function findMentionedMbtiTypes(value: string) {
+		const normalized = normalizeAnswerText(value);
+		if (!normalized) return [];
+
+		const uppercaseValue = normalized.toUpperCase();
+		return validMbtiTypes.filter(
+			(type) =>
+				uppercaseValue.includes(type) ||
+				mbtiVoiceAliases[type].some((alias) =>
+					normalized.includes(normalizeAnswerText(alias))
+				)
+		);
+	}
+
+	function isUnknownMbtiAnswer(value: string) {
+		const normalized = normalizeAnswerText(value);
+		if (!normalized) return false;
+
+		return (
+			onboardingAnswerAliases.mbtiType?.unknown.some((alias) =>
+				normalized.includes(normalizeAnswerText(alias))
+			) ?? false
+		);
+	}
+
+	function getOnboardingFreeformAnswer(
+		targetProfile: UserProfile,
+		questionId: Exclude<OnboardingQuestionId, 'mbtiType'>
+	) {
+		return (targetProfile.onboardingFreeformAnswers ?? []).find(
+			(answer) => answer.questionId === questionId
+		);
+	}
+
+	function upsertOnboardingFreeformAnswer(
+		targetProfile: UserProfile,
+		question: OnboardingQuestion,
+		answer: string,
+		source: OnboardingFreeformAnswer['source']
+	): UserProfile {
+		if (question.id === 'mbtiType') return targetProfile;
+		const now = new Date().toISOString();
+		const freeformAnswer: OnboardingFreeformAnswer = {
+			questionId: question.id,
+			question: question.prompt,
+			answer,
+			source,
+			createdAt: now
+		};
+
+		return {
+			...targetProfile,
+			onboardingFreeformAnswers: [
+				...(targetProfile.onboardingFreeformAnswers ?? []).filter(
+					(item) => item.questionId !== question.id
+				),
+				freeformAnswer
+			],
+			updatedAt: now
+		};
+	}
+
+	function onboardingSelectionStatus(question: OnboardingQuestion, values: string[]) {
+		const labels = question.options
+			.filter((option) => values.includes(option.value))
+			.map((option) => option.label);
+		return labels.length ? `${labels.join(', ')}로 입력했어.` : '';
+	}
+
+	function resetOnboardingAnswerInput() {
+		onboardingAnswerInput = '';
+		onboardingAnswerSource = 'text';
+		onboardingSpeechStatus = '';
+		onboardingVoicePaused = false;
+		speechTranscript = '';
+		speechMessage = '';
+	}
+
+	function openOnboarding(index: number) {
+		onboardingIndex = index;
+		resetOnboardingAnswerInput();
+		screen = 'onboarding';
+		onboardingIntroVisible = index === 0 && !profile?.onboardingCompleted;
+		if (onboardingIntroVisible) {
+			stopOnboardingVoice();
+			return;
+		}
+		beginOnboardingVoice(onboardingQuestions[index]);
+	}
+
+	function startOnboardingQuestions() {
+		onboardingIntroVisible = false;
+		resetOnboardingAnswerInput();
+		beginOnboardingVoice(currentOnboardingQuestion);
 	}
 
 	function setSingleOnboardingAnswer(
@@ -586,10 +889,15 @@
 	}
 
 	function continueOnboarding() {
-		if (!profile || !onboardingAnswered) return;
+		if (!profile) return;
+		const hasAnswer = onboardingAnswerInput.trim()
+			? commitOnboardingAnswerInput()
+			: onboardingAnswered;
+		if (!hasAnswer) return;
 
 		if (onboardingIndex < onboardingQuestions.length - 1) {
-			onboardingIndex += 1;
+			const nextIndex = onboardingIndex + 1;
+			openOnboarding(nextIndex);
 			return;
 		}
 
@@ -601,6 +909,9 @@
 		profile = nextProfile;
 		saveProfile(nextProfile);
 		onboardingIndex = 0;
+		onboardingIntroVisible = false;
+		resetOnboardingAnswerInput();
+		stopOnboardingVoice();
 		screen = 'home';
 	}
 
@@ -608,8 +919,7 @@
 		if (!profile) return;
 		if (!isProfileOnboardingComplete(profile)) {
 			const missingIndex = firstUnansweredOnboardingIndex(profile);
-			onboardingIndex = missingIndex === -1 ? 0 : missingIndex;
-			screen = 'onboarding';
+			openOnboarding(missingIndex === -1 ? 0 : missingIndex);
 			return;
 		}
 
@@ -960,7 +1270,12 @@
 			screen = 'auth';
 			return;
 		}
-		screen = isProfileOnboardingComplete(profile) ? 'home' : 'onboarding';
+		if (isProfileOnboardingComplete(profile)) {
+			screen = 'home';
+			return;
+		}
+		const missingIndex = firstUnansweredOnboardingIndex(profile);
+		openOnboarding(missingIndex === -1 ? 0 : missingIndex);
 	}
 
 	function parseBudget(value: string) {
@@ -1012,27 +1327,145 @@
 		answerFollowup(currentFollowup, selected.value);
 	}
 
-	function getSpeechCtor(): SpeechRecognitionConstructor | undefined {
+	function stopOnboardingVoice() {
+		clearOnboardingSilenceTimer();
+		onboardingSpeaking = false;
+		getWebSpeechSynthesis()?.cancel();
+		if (listeningFor === 'onboarding') stopActiveRecognition();
+	}
+
+	function beginOnboardingVoice(
+		question: OnboardingQuestion = currentOnboardingQuestion,
+		options: OnboardingVoiceOptions = {}
+	) {
+		onboardingVoicePaused = false;
+		onboardingSpeechStatus = '';
+
+		const shouldReadQuestion =
+			options.readQuestion ?? !spokenOnboardingQuestionIds.includes(question.id);
+		if (
+			WEB_SPEECH_TTS_ENABLED &&
+			shouldReadQuestion &&
+			speakOnboardingQuestionWithWebSpeech(question)
+		) {
+			if (!spokenOnboardingQuestionIds.includes(question.id)) {
+				spokenOnboardingQuestionIds.push(question.id);
+			}
+			return;
+		}
+		onboardingSpeaking = false;
+		getWebSpeechSynthesis()?.cancel();
+		startSpeech('onboarding');
+	}
+
+	function restartOnboardingVoice() {
+		beginOnboardingVoice(currentOnboardingQuestion, { readQuestion: false });
+	}
+
+	function speakOnboardingQuestionWithWebSpeech(
+		question: OnboardingQuestion = currentOnboardingQuestion
+	) {
+		const synthesis = getWebSpeechSynthesis();
+		if (!synthesis) return false;
+
+		stopActiveRecognition();
+		synthesis.cancel();
+		onboardingSpeaking = true;
+		speechTranscript = '';
+		speechMessage = '';
+		onboardingSpeechStatus = '';
+
+		const answerHint =
+			question.id === 'mbtiType'
+				? 'ENFP처럼 MBTI 유형 하나만 말하거나, 잘 모르겠다고 말해줘.'
+				: '';
+		const utterance = new SpeechSynthesisUtterance(
+			[question.prompt, answerHint].filter(Boolean).join(' ')
+		);
+		utterance.lang = 'ko-KR';
+		utterance.rate = 1.02;
+		utterance.onend = () => {
+			onboardingSpeaking = false;
+			if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
+		};
+		utterance.onerror = () => {
+			onboardingSpeaking = false;
+			if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
+		};
+		synthesis.speak(utterance);
+		return true;
+	}
+
+	function clearOnboardingSilenceTimer() {
+		if (!onboardingSilenceTimer) return;
+		clearTimeout(onboardingSilenceTimer);
+		onboardingSilenceTimer = null;
+	}
+
+	function pauseOnboardingVoice() {
+		clearOnboardingSilenceTimer();
+		onboardingVoicePaused = true;
+		onboardingSpeechStatus = '잠깐 멈춰둘게. 캐릭터를 누르면 다시 들을게.';
+		if (listeningFor === 'onboarding') stopActiveRecognition();
+	}
+
+	function armOnboardingSilenceTimer() {
+		clearOnboardingSilenceTimer();
+		onboardingSilenceTimer = setTimeout(() => {
+			if (listeningFor === 'onboarding' && !speechTranscript.trim()) pauseOnboardingVoice();
+		}, ONBOARDING_SILENCE_TIMEOUT_MS);
+	}
+
+	function stopActiveRecognition() {
+		if (listeningFor === 'onboarding') clearOnboardingSilenceTimer();
+		if (!activeRecognition) {
+			listeningFor = null;
+			return;
+		}
+
+		const recognition = activeRecognition;
+		activeRecognition = null;
+		recognition.stop();
+		listeningFor = null;
+	}
+
+	function getWebSpeechSynthesis() {
+		if (!browser || !window.speechSynthesis) return null;
+		return window.speechSynthesis;
+	}
+
+	function getWebSpeechRecognitionCtor(): WebSpeechRecognitionConstructor | undefined {
 		if (!browser) return undefined;
 		const speechWindow = window as Window & {
-			SpeechRecognition?: SpeechRecognitionConstructor;
-			webkitSpeechRecognition?: SpeechRecognitionConstructor;
+			SpeechRecognition?: WebSpeechRecognitionConstructor;
+			webkitSpeechRecognition?: WebSpeechRecognitionConstructor;
 		};
 		return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
 	}
 
 	function startSpeech(target: SpeechTarget) {
-		const SpeechRecognition = getSpeechCtor();
+		const SpeechRecognition = getWebSpeechRecognitionCtor();
 		speechMessage = '';
 
 		if (!SpeechRecognition) {
-			speechMessage = '음성 인식이 안 되면 칩으로 바로 골라도 돼.';
+			speechMessage = '이 브라우저에서는 Web Speech API 음성 인식이 안 돼.';
+			if (target === 'onboarding') {
+				onboardingVoicePaused = true;
+				onboardingSpeechStatus = 'Web Speech API 음성 인식이 안 돼. 직접 입력해줘.';
+			}
 			return;
 		}
 
+		stopActiveRecognition();
 		const recognition = new SpeechRecognition();
+		activeRecognition = recognition;
 		listeningFor = target;
 		speechTranscript = '';
+		if (target === 'onboarding') {
+			onboardingVoicePaused = false;
+			onboardingSpeechStatus = '';
+			armOnboardingSilenceTimer();
+		}
 		recognition.lang = 'ko-KR';
 		recognition.interimResults = true;
 		recognition.maxAlternatives = 1;
@@ -1044,27 +1477,60 @@
 			speechTranscript = text;
 			if (target === 'time') applyTimeTranscript(text);
 			if (target === 'budget') applyBudgetTranscript(text);
+			if (target === 'onboarding') {
+				onboardingAnswerInput = text;
+				onboardingAnswerSource = 'voice';
+				if (text) clearOnboardingSilenceTimer();
+			}
 		};
 		recognition.onerror = () => {
 			speechMessage = '잘 못 들었어. 아래 선택지로 이어가줘.';
+			if (target === 'onboarding') {
+				clearOnboardingSilenceTimer();
+				onboardingVoicePaused = true;
+				onboardingSpeechStatus = '잘 못 들었어. 캐릭터를 누르면 다시 들을게.';
+			}
 			listeningFor = null;
+			if (activeRecognition === recognition) activeRecognition = null;
 		};
 		recognition.onend = () => {
+			const naturalEnd = activeRecognition === recognition;
 			if (target === 'followup' && speechTranscript) applyFollowupTranscript(speechTranscript);
+			if (target === 'onboarding' && speechTranscript && naturalEnd) {
+				clearOnboardingSilenceTimer();
+				onboardingSpeechStatus = '답변 받아 적었어. 다음 누르면 저장하고 넘어갈게.';
+			}
+			if (target === 'onboarding' && !speechTranscript && naturalEnd && screen === 'onboarding') {
+				clearOnboardingSilenceTimer();
+				onboardingVoicePaused = true;
+				onboardingSpeechStatus = '잠깐 멈춰둘게. 캐릭터를 누르면 다시 들을게.';
+			}
 			listeningFor = null;
+			if (activeRecognition === recognition) activeRecognition = null;
 		};
-		recognition.start();
+		try {
+			recognition.start();
+		} catch {
+			if (target === 'onboarding') {
+				clearOnboardingSilenceTimer();
+				onboardingVoicePaused = true;
+				onboardingSpeechStatus = '지금은 마이크를 열 수 없어. 캐릭터를 누르면 다시 시도할게.';
+			}
+			listeningFor = null;
+			if (activeRecognition === recognition) activeRecognition = null;
+		}
 	}
 
 	function speakResults() {
-		if (!browser || !recommendations.length || !window.speechSynthesis) return;
-		window.speechSynthesis.cancel();
+		const synthesis = getWebSpeechSynthesis();
+		if (!recommendations.length || !synthesis) return;
+		synthesis.cancel();
 		const summary = recommendations
 			.map((card, index) => `${index + 1}번, ${card.label}. ${card.reason}`)
 			.join(' ');
 		const utterance = new SpeechSynthesisUtterance(summary);
 		utterance.lang = 'ko-KR';
-		window.speechSynthesis.speak(utterance);
+		synthesis.speak(utterance);
 	}
 
 	function getProgress(
@@ -1136,26 +1602,20 @@
 <main class="app-frame">
 	<section class={`phone-shell state-${screen}`}>
 		<header class="topbar">
-			<button class="brand-button" type="button" onclick={goHome} aria-label="홈으로">
-				<img src={saiSymbol} alt="" />
-				<span>사이</span>
-			</button>
+			{#if progress.total > 0}
+				<div
+					class="linear-progress"
+					aria-label={`${progress.label} ${progress.current}/${progress.total}`}
+				>
+					<span style:width={progressPercent}></span>
+				</div>
+			{:else}
+				<span class="topbar-spacer"></span>
+			{/if}
 			{#if currentUserId}
 				<button class="ghost small" type="button" onclick={logout}>나가기</button>
 			{/if}
 		</header>
-
-		{#if progress.total > 0}
-			<div
-				class="stepper"
-				style={`--steps:${progress.total}`}
-				aria-label={`${progress.label} ${progress.current}/${progress.total}`}
-			>
-				{#each progressDots as index (index)}
-					<span class={index < progress.current ? 'active' : ''}></span>
-				{/each}
-			</div>
-		{/if}
 
 		{#if screen === 'auth'}
 			<section class="screen auth-screen">
@@ -1264,40 +1724,78 @@
 				</div>
 			</section>
 		{:else if screen === 'onboarding'}
-			<section class="screen decision-screen">
-				<div class="coach-row">
-					<div class={`mini-mascot mascot-${mascotState}`}>
-						<img src={saiSymbol} alt="" />
+			<section class="screen decision-screen onboarding-screen">
+				{#if onboardingIntroVisible}
+					<div class="onboarding-coach">
+						<div class="onboarding-bubble onboarding-intro-bubble">
+							<p class="eyebrow">처음 만났네</p>
+							<h1>안녕, 나는 사이야.</h1>
+							<p>
+								너한테 더 잘 맞는 선택지를 찾아주려고, 먼저 너를 조금 알아보는 질문을
+								몇 개만 할게.
+							</p>
+						</div>
+						<div class="onboarding-mascot-ring onboarding-intro-mascot-ring" aria-hidden="true">
+							<div class="mascot mascot-happy onboarding-mascot">
+								<img src={saiSymbol} alt="" />
+							</div>
+						</div>
 					</div>
-					<div class="speech-bubble">
-						<p class="eyebrow">{progress.current}/{progress.total}</p>
-						<h1>{currentOnboardingQuestion.prompt}</h1>
-						<p>{currentOnboardingQuestion.reaction}</p>
-					</div>
-				</div>
 
-				<div class={`choice-stack ${currentOnboardingQuestion.compact ? 'compact-grid' : ''}`}>
-					{#each currentOnboardingQuestion.options as option (option.id)}
-						<button
-							class={isOnboardingSelected(currentOnboardingQuestion, option.value) ? 'active' : ''}
-							type="button"
-							onclick={() => selectOnboardingOption(currentOnboardingQuestion, option.value)}
-						>
-							{option.label}
+					<div class="bottom-actions">
+						<button class="primary" type="button" onclick={startOnboardingQuestions}>
+							시작하기
 						</button>
-					{/each}
-				</div>
+					</div>
+				{:else}
+					<div class="onboarding-coach">
+						<div class="onboarding-bubble">
+							<p class="eyebrow">온보딩</p>
+							<h1>{currentOnboardingQuestion.prompt}</h1>
+							<p>{currentOnboardingQuestion.reaction}</p>
+						</div>
+						<button
+							class={`onboarding-mascot-ring mascot-pulse ${listeningFor === 'onboarding' ? 'listening' : ''}`}
+							type="button"
+							onclick={restartOnboardingVoice}
+							aria-label="말로 답하기 다시 시작"
+						>
+							<div class={`mascot mascot-${onboardingMascotState} onboarding-mascot`}>
+								<img src={saiSymbol} alt="사이" />
+							</div>
+						</button>
 
-				<div class="bottom-actions">
-					<button
-						class="primary"
-						type="button"
-						onclick={continueOnboarding}
-						disabled={!onboardingAnswered}
-					>
-						{onboardingIndex === onboardingQuestions.length - 1 ? '온보딩 끝내기' : '다음'}
-					</button>
-				</div>
+						{#if onboardingVoiceCaption}
+							<p class="onboarding-voice-caption">{onboardingVoiceCaption}</p>
+						{/if}
+					</div>
+
+					<div class="onboarding-answer-panel">
+						<label class="field compact">
+							<span>직접 답변</span>
+							<input
+								value={onboardingAnswerInput}
+								oninput={handleOnboardingAnswerInput}
+								onkeydown={handleOnboardingAnswerKeydown}
+								placeholder={onboardingAnswerPlaceholder}
+							/>
+						</label>
+						{#if onboardingAnswerHelp}
+							<p>{onboardingAnswerHelp}</p>
+						{/if}
+					</div>
+
+					<div class="bottom-actions">
+						<button
+							class="primary"
+							type="button"
+							onclick={continueOnboarding}
+							disabled={!onboardingCanContinue}
+						>
+							{onboardingIndex === onboardingQuestions.length - 1 ? '완료' : '다음'}
+						</button>
+					</div>
+				{/if}
 			</section>
 		{:else if screen === 'home'}
 			<section class="screen home-screen">
@@ -1521,8 +2019,12 @@
 		{:else if screen === 'followup'}
 			<section class="screen decision-screen">
 				<div class="coach-row">
-					<div class="mini-mascot mascot-thinking">
-						<img src={saiSymbol} alt="" />
+					<div
+						class={`mini-mascot-ring mascot-pulse ${listeningFor === 'followup' ? 'listening' : ''}`}
+					>
+						<div class="mini-mascot mascot-thinking">
+							<img src={saiSymbol} alt="" />
+						</div>
 					</div>
 					<div class="speech-bubble">
 						<p class="eyebrow">
@@ -1776,39 +2278,28 @@
 		align-items: center;
 		justify-content: space-between;
 		min-height: 44px;
+		gap: 12px;
 	}
 
-	.brand-button {
-		min-height: 44px;
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-		border: 0;
-		background: transparent;
-		color: var(--ink);
-		font-weight: 900;
-		cursor: pointer;
-	}
-
-	.brand-button img {
-		width: 32px;
-		height: 36px;
-	}
-
-	.stepper {
-		display: grid;
-		grid-template-columns: repeat(var(--steps, 5), minmax(0, 1fr));
-		gap: 6px;
-	}
-
-	.stepper span {
-		height: 6px;
+	.linear-progress {
+		position: relative;
+		width: min(190px, 58vw);
+		height: 5px;
+		overflow: hidden;
 		border-radius: 999px;
 		background: #e6e0ed;
 	}
 
-	.stepper span.active {
+	.topbar-spacer {
+		flex: 1;
+	}
+
+	.linear-progress span {
+		position: absolute;
+		inset: 0 auto 0 0;
+		border-radius: 999px;
 		background: var(--brand);
+		transition: width 260ms ease;
 	}
 
 	.screen {
@@ -2161,9 +2652,162 @@
 		font-weight: 700;
 	}
 
+	.onboarding-screen {
+		gap: 12px;
+	}
+
+	.onboarding-coach {
+		flex: 1;
+		display: grid;
+		align-content: center;
+		justify-items: center;
+		gap: 14px;
+		min-height: 0;
+	}
+
+	.onboarding-bubble {
+		position: relative;
+		display: grid;
+		gap: 8px;
+		width: min(100%, 370px);
+		padding: 16px;
+		border: 1px solid rgba(236, 231, 243, 0.92);
+		border-radius: 20px;
+		background: #fff;
+		box-shadow: 0 12px 28px rgba(120, 110, 160, 0.13);
+	}
+
+	.onboarding-bubble::before,
+	.onboarding-bubble::after {
+		position: absolute;
+		left: 50%;
+		width: 18px;
+		height: 18px;
+		content: '';
+		transform: translateX(-50%) rotate(45deg);
+	}
+
+	.onboarding-bubble::before {
+		bottom: -10px;
+		border-bottom: 1px solid rgba(236, 231, 243, 0.92);
+		border-right: 1px solid rgba(236, 231, 243, 0.92);
+		background: #fff;
+	}
+
+	.onboarding-bubble::after {
+		bottom: -8px;
+		background: #fff;
+	}
+
+	.onboarding-intro-bubble {
+		text-align: center;
+	}
+
+	.onboarding-intro-bubble p:not(.eyebrow) {
+		line-height: 1.55;
+	}
+
+	.onboarding-mascot-ring,
+	.mini-mascot-ring {
+		position: relative;
+		display: grid;
+		place-items: center;
+		isolation: isolate;
+	}
+
+	.onboarding-mascot-ring {
+		width: 156px;
+		height: 166px;
+		border: 0;
+		background: transparent;
+		padding: 0;
+		cursor: pointer;
+	}
+
+	.onboarding-intro-mascot-ring {
+		cursor: default;
+	}
+
+	.onboarding-mascot-ring:focus-visible {
+		outline: 3px solid rgba(180, 94, 232, 0.28);
+		outline-offset: 4px;
+	}
+
+	.mini-mascot-ring {
+		width: 76px;
+		height: 82px;
+	}
+
+	.mascot-pulse::before,
+	.mascot-pulse::after {
+		position: absolute;
+		inset: 10px;
+		z-index: 0;
+		border: 2px solid rgba(91, 108, 255, 0.28);
+		border-radius: 999px;
+		background: rgba(180, 94, 232, 0.07);
+		content: '';
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.mini-mascot-ring::before,
+	.mini-mascot-ring::after {
+		inset: 2px;
+	}
+
+	.mascot-pulse.listening::before,
+	.mascot-pulse.listening::after {
+		animation: listen-ring 1.55s ease-out infinite;
+	}
+
+	.mascot-pulse.listening::after {
+		border-color: rgba(255, 107, 94, 0.28);
+		background: rgba(255, 107, 94, 0.06);
+		animation-delay: 0.72s;
+	}
+
+	.onboarding-mascot,
+	.mini-mascot-ring .mini-mascot {
+		z-index: 1;
+	}
+
+	.mascot-listening img {
+		animation: listening-float 1.35s ease-in-out infinite;
+	}
+
+	.mascot-talking img {
+		animation: talking-bounce 520ms ease-in-out infinite;
+	}
+
+	.onboarding-voice-caption {
+		min-height: 22px;
+		text-align: center;
+		font-size: 13px;
+		font-weight: 800;
+	}
+
+	.onboarding-answer-panel {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 8px;
+	}
+
+	.onboarding-screen .bottom-actions {
+		margin-top: 4px;
+	}
+
+	.onboarding-answer-panel p {
+		grid-column: 1 / -1;
+		margin: 0;
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 800;
+	}
+
 	.coach-row {
 		display: grid;
-		grid-template-columns: 66px 1fr;
+		grid-template-columns: 76px 1fr;
 		gap: 12px;
 		align-items: start;
 	}
@@ -2677,6 +3321,37 @@
 		}
 		62% {
 			transform: translateY(2px) rotate(1.2deg) scale(0.998);
+		}
+	}
+
+	@keyframes listen-ring {
+		0% {
+			opacity: 0.78;
+			transform: scale(0.76);
+		}
+		100% {
+			opacity: 0;
+			transform: scale(1.28);
+		}
+	}
+
+	@keyframes listening-float {
+		0%,
+		100% {
+			transform: translateY(0) scale(1);
+		}
+		50% {
+			transform: translateY(-5px) scale(1.025);
+		}
+	}
+
+	@keyframes talking-bounce {
+		0%,
+		100% {
+			transform: translateY(0) scale(1);
+		}
+		50% {
+			transform: translateY(-3px) scale(1.018);
 		}
 	}
 

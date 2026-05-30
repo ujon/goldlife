@@ -35,6 +35,7 @@ type ProfileRow = {
 	risk_tolerance: string;
 	mobility_preference: string;
 	mbti_type: UserProfile['mbtiType'] | null;
+	onboarding_freeform_answers: UserProfile['onboardingFreeformAnswers'] | null;
 	recent_location: UserProfile['recentLocation'] | null;
 	updated_at: Date;
 };
@@ -147,6 +148,7 @@ export async function upsertProfile(profile: UserProfile) {
 			risk_tolerance,
 			mobility_preference,
 			mbti_type,
+			onboarding_freeform_answers,
 			recent_location,
 			updated_at
 		)
@@ -159,6 +161,7 @@ export async function upsertProfile(profile: UserProfile) {
 			${profile.riskTolerance},
 			${profile.mobilityPreference},
 			${profile.mbtiType ?? ''},
+			${sql.json(profile.onboardingFreeformAnswers ?? [])},
 			${profile.recentLocation ? sql.json(profile.recentLocation) : null},
 			now()
 		)
@@ -170,6 +173,7 @@ export async function upsertProfile(profile: UserProfile) {
 			risk_tolerance = excluded.risk_tolerance,
 			mobility_preference = excluded.mobility_preference,
 			mbti_type = excluded.mbti_type,
+			onboarding_freeform_answers = excluded.onboarding_freeform_answers,
 			recent_location = excluded.recent_location,
 			updated_at = now()
 	`;
@@ -408,6 +412,7 @@ function createProfile(user: UserRow): UserProfile {
 		riskTolerance: '',
 		mobilityPreference: '',
 		mbtiType: '',
+		onboardingFreeformAnswers: [],
 		updatedAt: user.updated_at.toISOString()
 	};
 }
@@ -423,6 +428,7 @@ function mapProfile(user: UserRow, row: ProfileRow): UserProfile {
 		riskTolerance: row.risk_tolerance,
 		mobilityPreference: row.mobility_preference,
 		mbtiType: row.mbti_type ?? '',
+		onboardingFreeformAnswers: row.onboarding_freeform_answers ?? [],
 		recentLocation: row.recent_location ?? undefined,
 		updatedAt: row.updated_at.toISOString()
 	};

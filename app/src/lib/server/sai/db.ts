@@ -56,6 +56,7 @@ async function ensureSchemaInner() {
 				risk_tolerance text not null default '',
 				mobility_preference text not null default '',
 				mbti_type text not null default '',
+				onboarding_freeform_answers jsonb not null default '[]'::jsonb,
 				recent_location jsonb,
 				updated_at timestamptz not null default now()
 			)
@@ -64,6 +65,11 @@ async function ensureSchemaInner() {
 			await tx`
 			alter table sai.user_profiles
 			add column if not exists mbti_type text not null default ''
+		`;
+
+			await tx`
+			alter table sai.user_profiles
+			add column if not exists onboarding_freeform_answers jsonb not null default '[]'::jsonb
 		`;
 
 			await tx`
