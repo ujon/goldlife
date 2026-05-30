@@ -1,6 +1,11 @@
 import { env } from '$env/dynamic/private';
-import type { CandidateBundle } from '$lib/sai/candidates';
-import { composeRecommendations } from '$lib/sai/recommendations';
+import type {
+	ActivityCandidate,
+	CandidateBundle,
+	CandidateQueryPlan,
+	RestaurantCandidate
+} from '$lib/sai/candidates';
+import { composeRecommendations, formatKrw, partyCount } from '$lib/sai/recommendations';
 import type {
 	RecommendationCard,
 	RecommendationHistoryItem,
@@ -9,7 +14,8 @@ import type {
 	UserProfile
 } from '$lib/sai/types';
 import { collectCandidates } from './candidates';
-import { loggedFetch } from './integration-logger';
+import { planCandidateQueries } from './candidate-plan';
+import { loggedFetch, logIntegrationEvent } from './integration-logger';
 
 export type ComposeResult = {
 	cards: RecommendationCard[];
@@ -31,20 +37,34 @@ type OpenAIResponse = {
 };
 
 const DEFAULT_MODEL = 'gpt-5.4-mini';
+const LONG_ACTIVITY_PATTERN =
+	/글램핑|캠핑장|캠핑|야영|카라반|숙박|리조트|당일치기|등산|트레킹|하이킹/i;
 
 export async function composeWithOrchestrator(
 	profile: UserProfile,
 	session: RecommendationSession,
 	histories: RecommendationHistoryItem[] = []
 ): Promise<ComposeResult> {
-	const candidates = await collectCandidates({ profile, session });
+	const initialCandidates = await collectCandidates({ profile, session });
+	const queryPlan = await planCandidateQueries(profile, session, histories, initialCandidates);
+	const refinedCandidates = await collectCandidates({ profile, session, queryPlan });
+	const candidates = mergeCandidateBundles(
+		initialCandidates,
+		refinedCandidates,
+		session,
+		queryPlan
+	);
 	const fallbackCards = scopeCardsToSession(
-		applyHistoryHints(
-			applyCandidateBundle(composeRecommendations(profile, session), candidates),
-			histories
+		applySessionGuards(
+			applyHistoryHints(
+				applyCandidateBundle(composeRecommendations(profile, session), candidates),
+				histories
+			),
+			session
 		),
 		session.id
 	);
+	await logRecommendationGuard(session, queryPlan, fallbackCards);
 
 	if (!env.OPENAI_API_KEY) {
 		return {
@@ -83,6 +103,79 @@ export async function composeWithOrchestrator(
 			fallbackReason: error instanceof Error ? error.message : 'OpenAI orchestration failed'
 		};
 	}
+}
+
+function mergeCandidateBundles(
+	initial: CandidateBundle,
+	refined: CandidateBundle,
+	session: RecommendationSession,
+	queryPlan: CandidateQueryPlan
+): CandidateBundle {
+	return {
+		weather: refined.weather ?? initial.weather,
+		trendKeywords: uniqueStrings([...refined.trendKeywords, ...initial.trendKeywords]).slice(0, 10),
+		activities: uniqueActivities([...refined.activities, ...initial.activities], session).slice(
+			0,
+			8
+		),
+		restaurants: uniqueRestaurants([...refined.restaurants, ...initial.restaurants]).slice(0, 8),
+		mobility: [...refined.mobility, ...initial.mobility].slice(0, 6),
+		statuses: [...refined.statuses, ...initial.statuses],
+		queryPlan
+	};
+}
+
+function uniqueActivities(candidates: ActivityCandidate[], session: RecommendationSession) {
+	const seen = new Set<string>();
+	return candidates.filter((candidate) => {
+		if (
+			isBlockedByLongActivityWindow(
+				session,
+				[candidate.title, candidate.address, ...candidate.tags].join(' ')
+			)
+		) {
+			return false;
+		}
+		const key = `${candidate.title}-${candidate.address ?? ''}`.replace(/\s/g, '').toLowerCase();
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function uniqueRestaurants(candidates: RestaurantCandidate[]) {
+	const seen = new Set<string>();
+	return candidates.filter((candidate) => {
+		const key = `${candidate.title}-${candidate.address ?? ''}`.replace(/\s/g, '').toLowerCase();
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function uniqueStrings(values: string[]) {
+	return [...new Set(values.filter(Boolean))];
+}
+
+function isBlockedByLongActivityWindow(session: RecommendationSession, text: string) {
+	if (!blocksLongActivity(session)) return false;
+	return LONG_ACTIVITY_PATTERN.test(text);
+}
+
+function isSingleActivityWindow(session: RecommendationSession) {
+	if (session.availableTime === 'one_hour') return true;
+	const start = session.startDateTime ? new Date(session.startDateTime) : null;
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+	return end.getTime() > start.getTime() && end.getTime() - start.getTime() <= 90 * 60 * 1000;
+}
+
+function blocksLongActivity(session: RecommendationSession) {
+	if (session.availableTime && !['day', 'weekend'].includes(session.availableTime)) return true;
+	const start = session.startDateTime ? new Date(session.startDateTime) : null;
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+	return end.getTime() > start.getTime() && end.getTime() - start.getTime() <= 300 * 60 * 1000;
 }
 
 async function requestOpenAICards(input: {
@@ -175,8 +268,9 @@ async function requestOpenAICards(input: {
 		throw new Error('OpenAI response did not include exactly 3 recommendations');
 	}
 
-	return cards.map((card, index) =>
-		normalizeCard(card, input.fallbackCards[index], input.sessionId)
+	return applySessionGuards(
+		cards.map((card, index) => normalizeCard(card, input.fallbackCards[index], input.sessionId)),
+		input.session
 	);
 }
 
@@ -205,7 +299,8 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 					address: activity.address ?? item.address,
 					lat: activity.lat ?? item.lat,
 					lng: activity.lng ?? item.lng,
-					availabilityText: activity.availabilityText ?? item.availabilityText
+					availabilityText: activity.availabilityText ?? item.availabilityText,
+					thumbnailUrl: activity.thumbnailUrl ?? item.thumbnailUrl
 				};
 			}
 
@@ -222,7 +317,8 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 					address: restaurant.address ?? item.address,
 					lat: restaurant.lat ?? item.lat,
 					lng: restaurant.lng ?? item.lng,
-					availabilityText: restaurant.availabilityText ?? item.availabilityText
+					availabilityText: restaurant.availabilityText ?? item.availabilityText,
+					thumbnailUrl: restaurant.thumbnailUrl ?? item.thumbnailUrl
 				};
 			}
 
@@ -250,6 +346,182 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 			reservationUrl,
 			outboundUrl: reservationUrl ?? routeMapUrl ?? card.outboundUrl
 		};
+	});
+}
+
+function applySessionGuards(cards: RecommendationCard[], session: RecommendationSession) {
+	const singleActivityWindow = isSingleActivityWindow(session);
+	const longActivityBlocked = blocksLongActivity(session);
+	if (!singleActivityWindow && !longActivityBlocked) return cards;
+	const budget = Math.max(session.budgetTotal ?? 50000, 10000);
+	const people = partyCount(session.situation);
+
+	return cards.map((card) => {
+		const safeItems = longActivityBlocked
+			? card.items.filter((item) => {
+					return !isBlockedByLongActivityWindow(
+						session,
+						[item.title, item.address, item.availabilityText].filter(Boolean).join(' ')
+					);
+				})
+			: card.items;
+		const fallbackItem = card.items.find((item) => item.slot === 'activity') ?? card.items[0];
+		const usableItems = safeItems.length
+			? safeItems.map((item) => ({
+					...item,
+					title: longActivityBlocked ? sanitizeLongActivityText(item.title) : item.title,
+					availabilityText: item.availabilityText
+						? sanitizeLongActivityText(item.availabilityText)
+						: item.availabilityText
+				}))
+			: fallbackItem
+				? [
+						{
+							...fallbackItem,
+							title: '근처 전시/카페 후보',
+							source: fallbackItem.source,
+							outboundUrl: fallbackItem.outboundUrl || 'https://map.kakao.com'
+						}
+					]
+				: [];
+		const primaryItem =
+			usableItems.find((item) => item.slot === 'activity') ?? usableItems[0] ?? fallbackItem;
+		if (!primaryItem) return card;
+		const items = singleActivityWindow ? [primaryItem] : usableItems;
+		const estimatedCost = Math.min(
+			budget,
+			Math.max(0, items.reduce((sum, item) => sum + (item.price || 0), 0) || card.estimatedCost)
+		);
+		const estimatedDuration = singleActivityWindow
+			? '1시간'
+			: capDurationToSession(card.estimatedDuration, session);
+		const guardedBadges = [
+			...new Set([
+				...(singleActivityWindow ? ['1시간 맞춤', '단일 활동'] : []),
+				...(longActivityBlocked ? ['긴 코스 제외'] : []),
+				...card.badges.map((badge) => sanitizeLongActivityText(badge))
+			])
+		].slice(0, 8);
+		const guardedReason = sanitizeLongActivityText(card.reason);
+
+		return {
+			...card,
+			title: singleActivityWindow
+				? `${primaryItem.title} 한 곳만 가기`
+				: sanitizeLongActivityText(card.title),
+			reason: `${guardedReason} ${
+				singleActivityWindow
+					? '1시간 안에 끝나야 해서 이동과 식사를 늘리지 않고 한 곳만 추천했어.'
+					: longActivityBlocked
+						? '사용 가능한 시간 안에 어렵거나 긴 코스는 제외했어.'
+						: ''
+			}`.trim(),
+			resultType: singleActivityWindow ? 'single_activity' : card.resultType,
+			estimatedDuration,
+			estimatedCost,
+			budgetText: oneHourBudgetText(budget, estimatedCost),
+			perPersonText: `1인당 약 ${formatKrw(Math.ceil(estimatedCost / people / 1000) * 1000)}`,
+			routeSummary:
+				singleActivityWindow && card.routeSummary.includes('+')
+					? '근거리 단일 활동'
+					: sanitizeLongActivityText(card.routeSummary),
+			badges: guardedBadges,
+			items
+		} satisfies RecommendationCard;
+	});
+}
+
+function capDurationToSession(duration: string, session: RecommendationSession) {
+	const maxMinutes = availableMinutes(session);
+	const durationMinutes = parseDurationMinutes(duration);
+	if (maxMinutes && !durationMinutes && duration.includes('맞춤'))
+		return formatDuration(maxMinutes);
+	if (!maxMinutes || !durationMinutes || durationMinutes <= maxMinutes) return duration;
+	return formatDuration(maxMinutes);
+}
+
+function availableMinutes(session: RecommendationSession) {
+	const start = session.startDateTime ? new Date(session.startDateTime) : null;
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+		const diffMinutes = Math.round((end.getTime() - start.getTime()) / 60000);
+		if (diffMinutes > 0) return diffMinutes;
+	}
+	if (session.availableTime === 'one_hour') return 60;
+	if (session.availableTime === 'two_three') return 180;
+	if (session.availableTime === 'half_day') return 300;
+	return undefined;
+}
+
+function parseDurationMinutes(duration: string) {
+	const hourMatch = duration.match(/(\d+)\s*시간/);
+	const minuteMatch = duration.match(/(\d+)\s*분/);
+	const hours = hourMatch?.[1] ? Number(hourMatch[1]) : 0;
+	const minutes = minuteMatch?.[1] ? Number(minuteMatch[1]) : 0;
+	const total = hours * 60 + minutes;
+	return total > 0 ? total : undefined;
+}
+
+function formatDuration(minutes: number) {
+	const hours = Math.floor(minutes / 60);
+	const rest = minutes % 60;
+	if (!hours) return `${rest}분`;
+	if (!rest) return `${hours}시간`;
+	return `${hours}시간 ${rest}분`;
+}
+
+function sanitizeLongActivityText(text: string) {
+	return text
+		.replace(/캠핑 감성 바비큐\/글램핑 카페/g, '바비큐 카페')
+		.replace(/가벼운 캠핑\/글램핑 체험/g, '짧은 야외 감성 체험')
+		.replace(/글램핑 또는 당일 캠핑 체험/g, '짧은 체험')
+		.replace(/캠핑 글램핑 야외 체험/g, '짧은 야외 감성 체험')
+		.replace(
+			/글램핑|캠핑장|캠핑|야영|카라반|숙박|리조트|당일치기|등산|트레킹|하이킹/g,
+			'짧은 활동'
+		);
+}
+
+function oneHourBudgetText(budget: number, cost: number) {
+	const diff = budget - cost;
+	if (diff > 0) return `예산보다 ${formatKrw(diff)} 여유 있어`;
+	if (diff === 0) return '예산에 딱 맞아';
+	return `예산보다 ${formatKrw(Math.abs(diff))} 높아`;
+}
+
+async function logRecommendationGuard(
+	session: RecommendationSession,
+	queryPlan: CandidateQueryPlan,
+	cards: RecommendationCard[]
+) {
+	if (!blocksLongActivity(session) && !isSingleActivityWindow(session)) return;
+	await logIntegrationEvent({
+		provider: 'internal',
+		kind: 'api',
+		operation: 'recommendation.time_guard',
+		method: 'INTERNAL',
+		url: 'sai://recommendation/time-guard',
+		ok: true,
+		durationMs: 0,
+		requestPayload: {
+			sessionId: session.id,
+			availableTime: session.availableTime,
+			startDateTime: session.startDateTime,
+			endDateTime: session.endDateTime,
+			queryPlanSource: queryPlan.source,
+			excludedKeywords: queryPlan.excludedKeywords
+		},
+		responsePayload: {
+			blocksLongActivity: blocksLongActivity(session),
+			singleActivityWindow: isSingleActivityWindow(session),
+			cards: cards.map((card) => ({
+				title: card.title,
+				resultType: card.resultType,
+				estimatedDuration: card.estimatedDuration,
+				items: card.items.map((item) => item.title),
+				badges: card.badges
+			}))
+		}
 	});
 }
 
@@ -343,7 +615,8 @@ function mergeItemExecutionData(items: RecommendationItem[], fallbackItems: Reco
 			address: item.address ?? fallback.address,
 			lat: item.lat ?? fallback.lat,
 			lng: item.lng ?? fallback.lng,
-			availabilityText: item.availabilityText ?? fallback.availabilityText
+			availabilityText: item.availabilityText ?? fallback.availabilityText,
+			thumbnailUrl: item.thumbnailUrl ?? fallback.thumbnailUrl
 		};
 	});
 }

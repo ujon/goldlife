@@ -17,8 +17,6 @@
 		AuthMode,
 		FeedbackRecord,
 		FollowupQuestion,
-		IntegrationLogEntry,
-		IntegrationLogsResult,
 		LocationSuggestion,
 		LocationValue,
 		MbtiType,
@@ -96,10 +94,6 @@
 		start: string;
 		end: string;
 		label: string;
-	};
-	type ResultInputSummaryItem = {
-		label: string;
-		value: string;
 	};
 
 	const defaultLocation: LocationValue = {
@@ -273,12 +267,6 @@
 	let recommendations = $state<RecommendationCard[]>([]);
 	let selectedRecommendationId = $state('');
 	let candidateBundle = $state<CandidateBundle | null>(null);
-	let compositionSource = $state<'openai' | 'fallback'>('fallback');
-	let integrationLogs = $state<IntegrationLogEntry[]>([]);
-	let integrationLogSource = $state<IntegrationLogsResult['source']>('memory');
-	let integrationLogsLoading = $state(false);
-	let integrationLogsMessage = $state('');
-	let integrationLogWindowStartedAt = $state('');
 	let activeSessionId = $state('');
 	let feedbackDraft = $state<Record<string, { sentiment?: 'like' | 'dislike'; reasons: string[] }>>(
 		{}
@@ -344,15 +332,21 @@
 	let timeRangeSummary = $derived(
 		timeRangeText(session.startDateTime ?? '', session.endDateTime ?? '')
 	);
-	let resultInputSummary = $derived(buildResultInputSummary(session));
 	let fallbackFollowupQuestions = $derived(profile ? buildFollowupQuestions(session, profile) : []);
 	let followupQuestions = $derived(
 		dynamicFollowups.length ? dynamicFollowups : fallbackFollowupQuestions
 	);
 	let currentFollowup = $derived(followupQuestions[followupIndex]);
 	let recentHistory = $derived(currentUserId ? histories.slice(0, 3) : []);
+	let selectedRecommendation = $derived(
+		recommendations.find((card) => card.id === selectedRecommendationId) ?? null
+	);
 	let mascotState = $derived(
-		screen === 'generating' ? 'thinking' : screen === 'results' ? 'happy' : 'idle'
+		screen === 'generating'
+			? 'thinking'
+			: screen === 'results' || screen === 'resultDetail'
+				? 'happy'
+				: 'idle'
 	);
 	let progress = $derived(
 		getProgress(screen, onboardingIndex, followupIndex, followupQuestions.length)
@@ -456,40 +450,6 @@
 		});
 	}
 
-	function resetIntegrationLogs() {
-		integrationLogs = [];
-		integrationLogSource = 'memory';
-		integrationLogsLoading = false;
-		integrationLogsMessage = '';
-		integrationLogWindowStartedAt = '';
-	}
-
-	async function refreshIntegrationLogs() {
-		if (!integrationLogWindowStartedAt) return;
-		integrationLogsLoading = true;
-		integrationLogsMessage = '';
-
-		const params = new URLSearchParams({
-			limit: '30',
-			since: integrationLogWindowStartedAt
-		});
-		const result = await serverJson<IntegrationLogsResult>(`/api/integration/logs?${params}`, {
-			method: 'GET'
-		});
-
-		if (result.type === 'ok') {
-			integrationLogs = result.data.logs;
-			integrationLogSource = result.data.source;
-			integrationLogsMessage = result.data.logs.length
-				? ''
-				: '이번 추천에서는 외부 API/AI 호출 로그가 아직 없어. API 키가 없으면 mock/fallback만 사용돼.';
-		} else {
-			integrationLogsMessage = result.message;
-		}
-
-		integrationLogsLoading = false;
-	}
-
 	function applyServerAuthResult(result: ServerAuthResult) {
 		histories = result.histories;
 		enterUser(result.user.id, result.profile);
@@ -557,8 +517,6 @@
 		authError = '';
 		recommendations = [];
 		candidateBundle = null;
-		compositionSource = 'fallback';
-		resetIntegrationLogs();
 		activeSessionId = '';
 		histories = [];
 	}
@@ -988,8 +946,6 @@
 		recommendations = [];
 		selectedRecommendationId = '';
 		candidateBundle = null;
-		compositionSource = 'fallback';
-		resetIntegrationLogs();
 		activeSessionId = '';
 		feedbackDraft = {};
 		speechTranscript = '';
@@ -1120,8 +1076,6 @@
 		}
 		followupIndex = 0;
 		followupAnswerInput = '';
-		resetIntegrationLogs();
-		integrationLogWindowStartedAt = new Date().toISOString();
 		const result = await loadFollowups();
 		dynamicFollowups = result.questions;
 		session.dynamicQuestions = note
@@ -1218,7 +1172,6 @@
 		screen = 'generating';
 		const composed = await composeRecommendationCards(profile, session);
 		candidateBundle = composed.candidates;
-		compositionSource = composed.source;
 		session.weatherSnapshot = weatherSnapshotFromCandidates(
 			composed.candidates,
 			session.weatherSnapshot
@@ -1230,7 +1183,6 @@
 		activeSessionId = session.id;
 		feedbackDraft = {};
 		saveHistory(cards);
-		await refreshIntegrationLogs();
 		screen = 'results';
 	}
 
@@ -1317,7 +1269,8 @@
 						address: activity.address ?? item.address,
 						lat: activity.lat ?? item.lat,
 						lng: activity.lng ?? item.lng,
-						availabilityText: activity.availabilityText ?? item.availabilityText
+						availabilityText: activity.availabilityText ?? item.availabilityText,
+						thumbnailUrl: activity.thumbnailUrl ?? item.thumbnailUrl
 					};
 				}
 
@@ -1334,7 +1287,8 @@
 						address: restaurant.address ?? item.address,
 						lat: restaurant.lat ?? item.lat,
 						lng: restaurant.lng ?? item.lng,
-						availabilityText: restaurant.availabilityText ?? item.availabilityText
+						availabilityText: restaurant.availabilityText ?? item.availabilityText,
+						thumbnailUrl: restaurant.thumbnailUrl ?? item.thumbnailUrl
 					};
 				}
 
@@ -1395,8 +1349,14 @@
 		screen = 'results';
 	}
 
-	function selectRecommendation(cardId: string) {
-		selectedRecommendationId = selectedRecommendationId === cardId ? '' : cardId;
+	function openRecommendationDetail(cardId: string) {
+		selectedRecommendationId = cardId;
+		recordClick(cardId);
+		screen = 'resultDetail';
+	}
+
+	function backToResults() {
+		screen = 'results';
 	}
 
 	function setFeedback(cardId: string, sentiment: 'like' | 'dislike') {
@@ -1622,26 +1582,6 @@
 		if (hours && restMinutes) return `${hours}시간 ${restMinutes}분`;
 		if (hours) return `${hours}시간`;
 		return `${restMinutes}분`;
-	}
-
-	function buildResultInputSummary(targetSession: RecommendationSession): ResultInputSummaryItem[] {
-		const timeText =
-			timeRangeText(targetSession.startDateTime ?? '', targetSession.endDateTime ?? '') ||
-			targetSession.customTime ||
-			(targetSession.availableTime ? timeMeta(targetSession.availableTime).label : '');
-		const extraContext = targetSession.dynamicAnswers.extra_context;
-		const items: ResultInputSummaryItem[] = [
-			{ label: '구성', value: situationLabel(targetSession.situation) },
-			{ label: '시간', value: timeText },
-			{
-				label: '예산',
-				value: targetSession.budgetTotal ? formatKrw(targetSession.budgetTotal) : ''
-			},
-			{ label: '위치', value: targetSession.location?.label ?? defaultLocation.label },
-			{ label: '요청', value: typeof extraContext === 'string' ? extraContext : '' }
-		];
-
-		return items.filter((item) => item.value.trim());
 	}
 
 	function applyTimeRange(range: ParsedTimeRange) {
@@ -2033,18 +1973,6 @@
 		}
 	}
 
-	function speakResults() {
-		const synthesis = getWebSpeechSynthesis();
-		if (!recommendations.length || !synthesis) return;
-		synthesis.cancel();
-		const summary = recommendations
-			.map((card, index) => `${index + 1}번, ${card.label}. ${card.reason}`)
-			.join(' ');
-		const utterance = new SpeechSynthesisUtterance(summary);
-		utterance.lang = 'ko-KR';
-		synthesis.speak(utterance);
-	}
-
 	function getProgress(
 		targetScreen: Screen,
 		targetOnboardingIndex: number,
@@ -2059,6 +1987,7 @@
 			};
 		}
 
+		const effectiveScreen = targetScreen === 'resultDetail' ? 'results' : targetScreen;
 		const flow: Screen[] = [
 			'time',
 			'situation',
@@ -2068,13 +1997,13 @@
 			'generating',
 			'results'
 		];
-		if (!flow.includes(targetScreen)) return { current: 0, total: 0, label: '' };
+		if (!flow.includes(effectiveScreen)) return { current: 0, total: 0, label: '' };
 
 		const total = 6 + followupLength;
-		let base = flow.indexOf(targetScreen) + 1;
-		if (targetScreen === 'followup') base = 5 + targetFollowupIndex;
-		if (targetScreen === 'generating') base = 5 + followupLength;
-		if (targetScreen === 'results') base = 6 + followupLength;
+		let base = flow.indexOf(effectiveScreen) + 1;
+		if (effectiveScreen === 'followup') base = 5 + targetFollowupIndex;
+		if (effectiveScreen === 'generating') base = 5 + followupLength;
+		if (effectiveScreen === 'results') base = 6 + followupLength;
 		return {
 			current: Math.min(base, total),
 			total,
@@ -2087,43 +2016,6 @@
 		if (source === 'api_fuse') return 'API Fuse';
 		if (source === 'genrank') return 'GenRank';
 		return 'SAI';
-	}
-
-	function providerLabel(provider: CandidateBundle['statuses'][number]['provider']) {
-		if (provider === 'myrealtrip') return '마이리얼트립';
-		if (provider === 'api_fuse') return 'API Fuse';
-		if (provider === 'genrank') return 'GenRank';
-		return 'Swing';
-	}
-
-	function integrationProviderLabel(provider: string) {
-		if (provider === 'myrealtrip') return '마이리얼트립';
-		if (provider === 'api_fuse') return 'API Fuse';
-		if (provider === 'genrank') return 'GenRank';
-		if (provider === 'swing') return 'Swing';
-		if (provider === 'openai') return 'OpenAI';
-		if (provider === 'exaone') return 'EXAONE';
-		if (provider === 'public_data') return '공공데이터';
-		return provider;
-	}
-
-	function integrationKindLabel(kind: IntegrationLogEntry['kind']) {
-		return kind === 'ai' ? 'AI' : 'API';
-	}
-
-	function integrationStatusLabel(log: IntegrationLogEntry) {
-		if (log.errorMessage) return '오류';
-		if (log.ok === true) return log.status ? `${log.status}` : '성공';
-		if (log.ok === false) return log.status ? `${log.status}` : '실패';
-		return '기록';
-	}
-
-	function integrationLogTime(value: string) {
-		return new Date(value).toLocaleTimeString('ko-KR', {
-			hour: '2-digit',
-			minute: '2-digit',
-			second: '2-digit'
-		});
 	}
 
 	function resultTypeLabel(card: RecommendationCard) {
@@ -2190,6 +2082,10 @@
 		return [item.availabilityText, item.address].filter(Boolean).join(' · ');
 	}
 
+	function cardThumbnailUrl(card: RecommendationCard) {
+		return card.items.find((item) => item.thumbnailUrl)?.thumbnailUrl ?? '';
+	}
+
 	function calendarDateValue(value: string | undefined) {
 		const date = parseDatetimeLocalValue(value ?? '');
 		if (!date) return '';
@@ -2254,13 +2150,26 @@
 {/snippet}
 
 {#snippet recommendationDetail(card: RecommendationCard)}
-	<article class="rec-card recommendation-detail inline-detail" aria-live="polite">
+	<article class="rec-card recommendation-detail" aria-live="polite">
 		<div class="rec-topline">
 			<span class="label-chip">상세 계획</span>
 			<span>{resultTypeLabel(card)}</span>
 		</div>
 		<h2>{card.title}</h2>
 		<p class="why">{card.reason}</p>
+
+		{#if cardThumbnailUrl(card)}
+			<a
+				class="detail-thumbnail-link"
+				href={cardReservationUrl(card)}
+				target="_blank"
+				rel="external noreferrer"
+				onclick={() => recordClick(card.id)}
+			>
+				<img src={cardThumbnailUrl(card)} alt={`${card.title} 사진`} loading="lazy" />
+				<span>예약/상세 보기</span>
+			</a>
+		{/if}
 
 		<div class="route-map-panel">
 			{#if routeMapEmbedUrl(card)}
@@ -2335,7 +2244,15 @@
 
 		<div class="course-items">
 			{#each card.items as item, itemIndex (`${item.slot}-${item.title}-${itemIndex}`)}
-				<div class="course-item">
+				<div class="course-item" class:has-thumb={Boolean(item.thumbnailUrl)}>
+					{#if item.thumbnailUrl}
+						<img
+							class="course-thumb"
+							src={item.thumbnailUrl}
+							alt={`${item.title} 사진`}
+							loading="lazy"
+						/>
+					{/if}
 					<div class="course-item-main">
 						<span>{sourceLabel(item.source)}</span>
 						<strong>{item.title}</strong>
@@ -2832,123 +2749,43 @@
 						</p>
 						<h1>이 3개로 추렸어</h1>
 					</div>
-					<div class="result-tools">
-						<span>{compositionSource === 'openai' ? 'OpenAI 작곡' : 'fallback 작곡'}</span>
-						<button
-							class="secondary small"
-							type="button"
-							onclick={refreshIntegrationLogs}
-							disabled={integrationLogsLoading}
-						>
-							{integrationLogsLoading ? '로그 확인 중' : '사용 로그'}
-						</button>
-						<button class="secondary small" type="button" onclick={speakResults}>읽어줘</button>
-					</div>
 				</div>
-
-				{#if candidateBundle}
-					<div class="source-strip" aria-label="후보 수집 출처">
-						{#each candidateBundle.statuses as status, index (`${status.provider}-${index}`)}
-							<span class={status.ok ? 'ok' : ''}>
-								{providerLabel(status.provider)}
-								{status.ok ? '연결' : status.configured ? 'fallback' : 'mock'}
-							</span>
-						{/each}
-					</div>
-				{/if}
-
-				{#if resultInputSummary.length}
-					<div class="result-input-summary" aria-label="사용자가 입력한 추천 조건">
-						{#each resultInputSummary as item (`${item.label}-${item.value}`)}
-							<span><strong>{item.label}</strong>{item.value}</span>
-						{/each}
-					</div>
-				{/if}
-
-				<details class="integration-log-panel integration-log-compact">
-					<summary>
-						<span>외부 API / AI 사용 로그</span>
-						<em>{integrationLogSource === 'database' ? 'DB' : '임시'}</em>
-					</summary>
-					<button
-						class="secondary small"
-						type="button"
-						onclick={refreshIntegrationLogs}
-						disabled={integrationLogsLoading}
-					>
-						{integrationLogsLoading ? '로그 확인 중' : '사용 로그 새로고침'}
-					</button>
-
-					{#if integrationLogs.length}
-						<div class="integration-log-list">
-							{#each integrationLogs as log (log.id)}
-								<div class="integration-log-row">
-									<div>
-										<strong>{integrationProviderLabel(log.provider)}</strong>
-										<span>{integrationKindLabel(log.kind)} · {log.operation}</span>
-									</div>
-									<div>
-										<em
-											class={log.ok === true
-												? 'ok'
-												: log.ok === false || log.errorMessage
-													? 'error'
-													: ''}
-										>
-											{integrationStatusLabel(log)}
-										</em>
-										<span>{log.durationMs}ms · {integrationLogTime(log.createdAt)}</span>
-									</div>
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<p class="integration-log-empty">
-							{integrationLogsMessage || '이번 추천의 외부 API/AI 호출 로그를 불러오는 중이야.'}
-						</p>
-					{/if}
-				</details>
 
 				<div class="recommendation-list card-picker" aria-label="추천 카드 목록">
 					{#each recommendations as card, index (card.id)}
-						<div class="recommendation-stack">
-							<button
-								class={`rec-card summary-card ${selectedRecommendationId === card.id ? 'selected' : ''}`}
-								type="button"
-								style={`--delay:${index * 60}ms`}
-								aria-pressed={selectedRecommendationId === card.id}
-								onclick={() => selectRecommendation(card.id)}
-							>
-								<div class="rec-topline">
-									<span class="label-chip">{card.label}</span>
-									<span>{resultTypeLabel(card)}</span>
+						<button
+							class="rec-card summary-card"
+							type="button"
+							style={`--delay:${index * 60}ms`}
+							aria-label={`${card.title} 상세 보기`}
+							onclick={() => openRecommendationDetail(card.id)}
+						>
+							<div class="rec-topline">
+								<span class="label-chip">{card.label}</span>
+								<span>{resultTypeLabel(card)}</span>
+							</div>
+							<h2>{card.title}</h2>
+							<p class="card-summary">{card.reason}</p>
+							<div class="summary-metrics">
+								<div>
+									<span>시간</span>
+									<strong>{card.estimatedDuration}</strong>
 								</div>
-								<h2>{card.title}</h2>
-								<p class="card-summary">{card.reason}</p>
-								<div class="summary-metrics">
-									<div>
-										<span>시간</span>
-										<strong>{card.estimatedDuration}</strong>
-									</div>
-									<div>
-										<span>비용</span>
-										<strong>{formatKrw(card.estimatedCost)}</strong>
-									</div>
-									<div>
-										<span>이동</span>
-										<strong>{card.routeSummary}</strong>
-									</div>
+								<div>
+									<span>비용</span>
+									<strong>{formatKrw(card.estimatedCost)}</strong>
 								</div>
-								<div class="badge-row compact-badges">
-									{#each card.badges.slice(0, 3) as badge (badge)}
-										<span>{badge}</span>
-									{/each}
+								<div>
+									<span>이동</span>
+									<strong>{card.routeSummary}</strong>
 								</div>
-							</button>
-							{#if selectedRecommendationId === card.id}
-								{@render recommendationDetail(card)}
-							{/if}
-						</div>
+							</div>
+							<div class="badge-row compact-badges">
+								{#each card.badges.slice(0, 3) as badge (badge)}
+									<span>{badge}</span>
+								{/each}
+							</div>
+						</button>
 					{/each}
 				</div>
 
@@ -2956,6 +2793,24 @@
 					<button class="secondary" type="button" onclick={goHome}>홈</button>
 					<button class="primary" type="button" onclick={startRecommendation}>다시 추천</button>
 				</div>
+			</section>
+		{:else if screen === 'resultDetail'}
+			<section class="screen results-screen detail-screen">
+				<div class="detail-nav">
+					<button class="secondary small" type="button" onclick={backToResults}>목록</button>
+					<button class="secondary small" type="button" onclick={startRecommendation}
+						>다시 추천</button
+					>
+				</div>
+
+				{#if selectedRecommendation}
+					{@render recommendationDetail(selectedRecommendation)}
+				{:else}
+					<div class="rec-card recommendation-detail empty-detail">
+						<h2>선택한 추천을 찾을 수 없어.</h2>
+						<button class="primary" type="button" onclick={backToResults}>목록으로</button>
+					</div>
+				{/if}
 			</section>
 		{/if}
 	</section>
@@ -3667,7 +3522,6 @@
 		line-height: 1.3;
 	}
 
-	.result-input-summary span,
 	.summary-metrics span,
 	.plan-grid span,
 	.course-items span,
@@ -3704,165 +3558,6 @@
 		gap: 12px;
 	}
 
-	.result-tools {
-		display: grid;
-		justify-items: end;
-		gap: 6px;
-	}
-
-	.result-tools span {
-		color: var(--faint);
-		font-size: 11px;
-		font-weight: 900;
-	}
-
-	.source-strip {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-	}
-
-	.source-strip span {
-		border-radius: 999px;
-		background: #f2edf7;
-		color: var(--muted);
-		padding: 6px 9px;
-		font-size: 11px;
-		font-weight: 900;
-	}
-
-	.source-strip span.ok {
-		background: rgba(97, 176, 126, 0.12);
-		color: #28764e;
-	}
-
-	.result-input-summary {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-	}
-
-	.result-input-summary span {
-		display: inline-flex;
-		align-items: center;
-		max-width: 100%;
-		min-height: 28px;
-		gap: 5px;
-		border: 1px solid rgba(236, 231, 243, 0.92);
-		border-radius: 999px;
-		background: #fff;
-		color: var(--ink2);
-		padding: 0 9px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.result-input-summary strong {
-		color: var(--faint);
-		font-size: 10px;
-		font-weight: 900;
-	}
-
-	.integration-log-panel {
-		display: grid;
-		gap: 10px;
-		border: 1px solid var(--line);
-		border-radius: 18px;
-		background: #fff;
-		padding: 14px;
-		box-shadow: 0 4px 14px rgba(120, 110, 160, 0.08);
-	}
-
-	.integration-log-compact summary {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 10px;
-		color: var(--ink);
-		font-size: 13px;
-		font-weight: 900;
-		cursor: pointer;
-	}
-
-	.integration-log-compact summary::marker {
-		color: var(--faint);
-	}
-
-	.integration-log-compact summary em {
-		border-radius: 999px;
-		background: #f2edf7;
-		color: var(--muted);
-		padding: 5px 8px;
-		font-size: 10px;
-		font-style: normal;
-		font-weight: 900;
-	}
-
-	.integration-log-header,
-	.integration-log-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 10px;
-	}
-
-	.integration-log-header h2 {
-		margin: 0;
-		font-size: 16px;
-		line-height: 1.25;
-	}
-
-	.integration-log-list {
-		display: grid;
-		gap: 8px;
-	}
-
-	.integration-log-row {
-		min-height: 48px;
-		border-top: 1px solid rgba(236, 231, 243, 0.84);
-		padding-top: 8px;
-	}
-
-	.integration-log-row > div {
-		display: grid;
-		gap: 3px;
-		min-width: 0;
-	}
-
-	.integration-log-row > div:last-child {
-		justify-items: end;
-		text-align: right;
-	}
-
-	.integration-log-row strong,
-	.integration-log-row em {
-		color: var(--ink);
-		font-size: 13px;
-		font-style: normal;
-		font-weight: 900;
-	}
-
-	.integration-log-row span,
-	.integration-log-empty {
-		color: var(--muted);
-		font-size: 11px;
-		font-weight: 800;
-	}
-
-	.integration-log-row em.ok {
-		color: #28764e;
-	}
-
-	.integration-log-row em.error {
-		color: #b74747;
-	}
-
-	.integration-log-empty {
-		margin: 0;
-		line-height: 1.45;
-	}
-
 	.recommendation-list {
 		display: grid;
 		gap: 14px;
@@ -3887,13 +3582,6 @@
 		color: inherit;
 		text-align: left;
 		cursor: pointer;
-	}
-
-	.summary-card.selected {
-		border-color: rgba(91, 108, 255, 0.42);
-		box-shadow:
-			0 12px 30px rgba(91, 108, 255, 0.16),
-			0 0 0 4px rgba(91, 108, 255, 0.08);
 	}
 
 	.summary-card:focus-visible {
@@ -3951,19 +3639,54 @@
 		white-space: nowrap;
 	}
 
-	.recommendation-stack {
-		display: grid;
-		gap: 10px;
-	}
-
 	.recommendation-detail {
 		gap: 14px;
 		margin-bottom: 18px;
 	}
 
-	.inline-detail {
-		border-color: rgba(108, 113, 245, 0.32);
-		box-shadow: 0 18px 44px rgba(108, 113, 245, 0.14);
+	.detail-screen {
+		gap: 12px;
+	}
+
+	.detail-nav {
+		display: grid;
+		grid-template-columns: 0.72fr 1fr;
+		gap: 10px;
+	}
+
+	.detail-thumbnail-link {
+		position: relative;
+		display: block;
+		overflow: hidden;
+		min-height: 156px;
+		border-radius: 16px;
+		background: #f8f6fb;
+		color: #fff;
+		text-decoration: none;
+	}
+
+	.detail-thumbnail-link img {
+		width: 100%;
+		height: 180px;
+		display: block;
+		object-fit: cover;
+	}
+
+	.detail-thumbnail-link span {
+		position: absolute;
+		right: 12px;
+		bottom: 12px;
+		border-radius: 999px;
+		background: rgba(32, 28, 44, 0.72);
+		padding: 8px 11px;
+		font-size: 12px;
+		font-weight: 900;
+		backdrop-filter: blur(8px);
+	}
+
+	.empty-detail {
+		align-content: center;
+		min-height: 240px;
 	}
 
 	.route-map-panel {
@@ -4076,6 +3799,18 @@
 		border-radius: 14px;
 		padding: 10px;
 		color: var(--ink);
+	}
+
+	.course-item.has-thumb {
+		grid-template-columns: 64px minmax(0, 1fr) auto;
+	}
+
+	.course-thumb {
+		width: 64px;
+		height: 64px;
+		border-radius: 12px;
+		object-fit: cover;
+		background: #f8f6fb;
 	}
 
 	.course-item-main {
@@ -4350,6 +4085,19 @@
 
 		.course-item {
 			grid-template-columns: 1fr;
+		}
+
+		.course-item.has-thumb {
+			grid-template-columns: 56px minmax(0, 1fr);
+		}
+
+		.course-item.has-thumb em {
+			grid-column: 2;
+		}
+
+		.course-thumb {
+			width: 56px;
+			height: 56px;
 		}
 	}
 </style>

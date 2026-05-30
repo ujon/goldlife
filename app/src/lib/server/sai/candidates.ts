@@ -2,6 +2,7 @@ import { env } from '$env/dynamic/private';
 import type {
 	ActivityCandidate,
 	CandidateBundle,
+	CandidateQueryPlan,
 	MobilityCandidate,
 	ProviderStatus,
 	RestaurantCandidate,
@@ -9,11 +10,12 @@ import type {
 } from '$lib/sai/candidates';
 import { partyCount } from '$lib/sai/recommendations';
 import type { RecommendationSession, UserProfile } from '$lib/sai/types';
-import { loggedFetch } from './integration-logger';
+import { loggedFetch, logIntegrationEvent } from './integration-logger';
 
 type CandidateInput = {
 	profile: UserProfile;
 	session: RecommendationSession;
+	queryPlan?: CandidateQueryPlan;
 };
 type GeoCandidate = {
 	title: string;
@@ -26,12 +28,20 @@ type GeoCandidate = {
 const MYREALTRIP_BASE = 'https://partner-ext-api.myrealtrip.com';
 const APIFUSE_BASE = 'https://api.apifuse.com';
 const freeformKeywordRules = [
-	{ pattern: /캠핑|글램핑|야영|camp/i, activity: '캠핑 글램핑 야외 체험' },
+	{
+		pattern: /캠핑|글램핑|야영|camp/i,
+		activity: '캠핑 글램핑 야외 체험',
+		shortActivity: '바비큐 카페'
+	},
 	{ pattern: /등산|하이킹|트레킹|산에|산책/i, activity: '가벼운 트레킹 산책' },
 	{ pattern: /공연|전시|미술관|박물관/i, activity: '전시 공연' },
 	{ pattern: /공방|클래스|만들/i, activity: '원데이클래스' },
 	{ pattern: /맛집|식당|먹|카페/i, activity: '맛집 카페 투어' }
 ];
+const longActivityBlockedPattern =
+	/글램핑|캠핑장|캠핑|야영|카라반|숙박|리조트|당일치기|등산|트레킹|하이킹/i;
+const remoteShortWindowPattern =
+	/공항|라운지|워터파크|테마파크|투어|여행|항공|대만|타오위안|베트남|나트랑|다낭|푸꾸옥|동나이|부산|제주|인천|김포|김해|해외|호텔|숙소/i;
 
 export async function collectCandidates(input: CandidateInput): Promise<CandidateBundle> {
 	const statuses: ProviderStatus[] = [];
@@ -53,7 +63,8 @@ export async function collectCandidates(input: CandidateInput): Promise<Candidat
 		activities: activityResult,
 		restaurants: restaurantResult,
 		mobility: mobilityResult,
-		statuses
+		statuses,
+		queryPlan: input.queryPlan
 	};
 }
 
@@ -105,10 +116,12 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 		getMyrealtripActivities(input, statuses),
 		getApiFuseActivityCandidates(input)
 	]);
-	const activities = dedupeActivities([
+	const rawActivities = dedupeActivities([
 		...(apiFuseResult.status === 'fulfilled' ? apiFuseResult.value : []),
 		...(myrealtripResult.status === 'fulfilled' ? myrealtripResult.value : [])
-	]).slice(0, 8);
+	]);
+	const activities = filterActivitiesForSession(input, rawActivities).slice(0, 8);
+	await logActivityQualityGuard(input, rawActivities, activities);
 
 	return activities.length ? activities : fallback;
 }
@@ -182,14 +195,16 @@ async function getMyrealtripActivities(input: CandidateInput, statuses: Provider
 				price,
 				source: 'myrealtrip',
 				outboundUrl,
+				thumbnailUrl: thumbnailFromRow(item) || undefined,
 				tags: ['예약 후보', '액티비티'],
 				score: numberValue(item.reviewScore)
 			};
 		});
 
 		statuses.push({ provider: 'myrealtrip', configured: true, ok: candidates.length > 0 });
-		const enriched = await enrichActivityCandidates(input, candidates, apiKey);
-		return enriched;
+		const timeFiltered = filterActivitiesForSession(input, candidates);
+		const enriched = await enrichActivityCandidates(input, timeFiltered, apiKey);
+		return filterActivitiesForSession(input, enriched);
 	} catch (error) {
 		statuses.push({
 			provider: 'myrealtrip',
@@ -236,34 +251,39 @@ async function getRestaurants(input: CandidateInput, statuses: ProviderStatus[])
 }
 
 async function getCatchtableRestaurants(input: CandidateInput, apiKey: string) {
-	const response = await loggedFetch({
-		provider: 'api_fuse',
-		kind: 'api',
-		operation: 'catchtable.search',
-		url: `${APIFUSE_BASE}/v1/catchtable/search`,
-		init: {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${apiKey}`,
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				keyword: input.session.companionConstraints.hasBaby
-					? '키즈 프렌들리 카페'
-					: '캐주얼 다이닝',
-				lat: input.session.location?.lat,
-				lon: input.session.location?.lng,
-				limit: 8,
-				offset: 0,
-				sort: 'recommended'
-			}),
-			signal: AbortSignal.timeout(9000)
-		}
-	});
-	if (!response.ok) throw new Error(`API Fuse CatchTable ${response.status}`);
+	const rows = (
+		await Promise.all(
+			catchtableKeywords(input)
+				.slice(0, 2)
+				.map(async (keyword) => {
+					const response = await loggedFetch({
+						provider: 'api_fuse',
+						kind: 'api',
+						operation: 'catchtable.search',
+						url: `${APIFUSE_BASE}/v1/catchtable/search`,
+						init: {
+							method: 'POST',
+							headers: {
+								authorization: `Bearer ${apiKey}`,
+								'content-type': 'application/json'
+							},
+							body: JSON.stringify({
+								keyword,
+								lat: input.session.location?.lat,
+								lon: input.session.location?.lng,
+								limit: 6,
+								offset: 0,
+								sort: 'recommended'
+							}),
+							signal: AbortSignal.timeout(9000)
+						}
+					});
+					if (!response.ok) throw new Error(`API Fuse CatchTable ${response.status}`);
 
-	const payload = (await response.json()) as { data?: unknown; items?: unknown[] };
-	const rows = arrayFromPayload(payload);
+					return arrayFromPayload((await response.json()) as { data?: unknown; items?: unknown[] });
+				})
+		)
+	).flat();
 	const restaurants = rows.map((row, index): RestaurantCandidate => {
 		const item = row as Record<string, unknown>;
 		const shopRef = stringValue(item.shopRef) || stringValue(item.id) || `catchtable-${index}`;
@@ -281,6 +301,7 @@ async function getCatchtableRestaurants(input: CandidateInput, apiKey: string) {
 			address: stringValue(item.address) || stringValue(item.roadAddress),
 			lat,
 			lng,
+			thumbnailUrl: thumbnailFromRow(item) || undefined,
 			tags: ['예약 후보', '맛집'],
 			reservationHint: '예약 가능 시간 확인 필요'
 		};
@@ -462,19 +483,16 @@ async function getMobility(
 async function getApiFuseActivityCandidates(input: CandidateInput) {
 	const apiKey = env.API_FUSE_API_KEY;
 	if (!apiKey) return [];
-	const queries = apiFuseActivityQueries(input).slice(0, 3);
-	const results = await Promise.allSettled(
-		queries.flatMap((query) => [
-			searchKakaoPlaces(input, query, apiKey, 4),
-			searchNaverPlaces(input, query, apiKey, 4)
-		])
-	);
+	const queries = apiFuseActivityQueries(input).slice(0, 4);
+	const rows = await searchMapPlacesByQueries(input, queries, apiKey, 4, 16);
 
-	return dedupeActivities(
-		results
-			.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
-			.map((row, index) => placeRowToActivity(row, index))
-			.filter((candidate): candidate is ActivityCandidate => Boolean(candidate))
+	return filterActivitiesForSession(
+		input,
+		dedupeActivities(
+			rows
+				.map((row, index) => placeRowToActivity(row, index))
+				.filter((candidate): candidate is ActivityCandidate => Boolean(candidate))
+		)
 	).slice(0, 8);
 }
 
@@ -509,21 +527,33 @@ async function enrichRestaurants(
 	restaurants: RestaurantCandidate[],
 	apiKey: string
 ) {
+	let placeLookupCount = 0;
 	return Promise.all(
 		restaurants.slice(0, 8).map(async (restaurant) => {
-			const [availability, place] = await Promise.all([
+			const needsPlaceLookup = restaurant.lat == null || restaurant.lng == null;
+			const canLookupPlace = needsPlaceLookup && placeLookupCount < 3;
+			if (canLookupPlace) placeLookupCount += 1;
+			const [availability, place, shop] = await Promise.all([
 				getCatchtableAvailability(input, restaurant, apiKey),
-				restaurant.lat && restaurant.lng ? null : findKakaoPlace(input, restaurant.title, apiKey)
+				canLookupPlace ? findKakaoPlace(input, restaurant.title, apiKey) : null,
+				getCatchtableShopSummary(restaurant, apiKey)
 			]);
 			return {
 				...restaurant,
 				mapUrl: restaurant.mapUrl ?? place?.mapUrl,
-				address: restaurant.address || place?.address,
+				address: restaurant.address || shop?.address || place?.address,
 				lat: restaurant.lat ?? place?.lat,
 				lng: restaurant.lng ?? place?.lng,
 				availabilityText: availability ?? restaurant.availabilityText,
+				thumbnailUrl: restaurant.thumbnailUrl ?? shop?.thumbnailUrl,
 				reservationHint: availability ?? restaurant.reservationHint,
-				tags: [...new Set([...restaurant.tags, ...(availability ? ['예약 슬롯 확인'] : [])])]
+				tags: [
+					...new Set([
+						...restaurant.tags,
+						...(shop?.tags ?? []),
+						...(availability ? ['예약 슬롯 확인'] : [])
+					])
+				]
 			};
 		})
 	);
@@ -531,16 +561,10 @@ async function enrichRestaurants(
 
 async function getApiFuseRestaurantPlaces(input: CandidateInput, apiKey: string) {
 	const queries = restaurantPlaceQueries(input).slice(0, 3);
-	const results = await Promise.allSettled(
-		queries.flatMap((query) => [
-			searchKakaoPlaces(input, query, apiKey, 4),
-			searchNaverPlaces(input, query, apiKey, 4)
-		])
-	);
+	const rows = await searchMapPlacesByQueries(input, queries, apiKey, 4, 16);
 
 	return dedupeRestaurants(
-		results
-			.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+		rows
 			.map((row, index) => placeRowToRestaurant(row, index))
 			.filter((candidate): candidate is RestaurantCandidate => Boolean(candidate))
 	).slice(0, 8);
@@ -561,7 +585,9 @@ async function getYogiyoRestaurants(input: CandidateInput, apiKey: string) {
 				'content-type': 'application/json'
 			},
 			body: JSON.stringify({
-				keyword: input.session.companionConstraints.hasBaby ? '키즈' : '맛집',
+				keyword:
+					input.queryPlan?.restaurantQueries[0] ??
+					(input.session.companionConstraints.hasBaby ? '키즈' : '맛집'),
 				category: '',
 				address: input.session.location?.label ?? '',
 				lat: input.session.location.lat,
@@ -593,6 +619,7 @@ async function getYogiyoRestaurants(input: CandidateInput, apiKey: string) {
 			lat: numberValue(item.lat),
 			lng: numberValue(item.lng),
 			availabilityText: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined,
+			thumbnailUrl: thumbnailFromRow(item) || undefined,
 			tags: ['요기요', '배달 fallback', ...(item.is_open === false ? ['영업 확인 필요'] : [])],
 			reservationHint: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined
 		};
@@ -677,6 +704,50 @@ async function getCatchtableAvailability(
 		return `${selectedDate} 예약 페이지 확인`;
 	} catch {
 		return undefined;
+	}
+}
+
+async function getCatchtableShopSummary(restaurant: RestaurantCandidate, apiKey: string) {
+	if (!restaurant.id) return null;
+
+	try {
+		const response = await loggedFetch({
+			provider: 'api_fuse',
+			kind: 'api',
+			operation: 'catchtable.shop',
+			url: `${APIFUSE_BASE}/v1/catchtable/shop`,
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${apiKey}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					shop_ref: restaurant.id,
+					include_reviews: false,
+					review_limit: 1
+				}),
+				signal: AbortSignal.timeout(4500)
+			}
+		});
+		if (!response.ok) throw new Error(`CatchTable shop ${response.status}`);
+
+		const payload = (await response.json()) as { data?: Record<string, unknown> };
+		const data = payload.data ?? {};
+		const foodKind = stringValue(data.foodKind);
+		const rating = numberValue(data.avgRating);
+		const reviewCount = numberValue(data.reviewCount);
+		return {
+			address: stringValue(data.address) || undefined,
+			thumbnailUrl: thumbnailFromRow(data) || undefined,
+			tags: [
+				foodKind,
+				rating ? `평점 ${rating.toFixed(1)}` : '',
+				reviewCount ? `리뷰 ${reviewCount.toLocaleString('ko-KR')}` : ''
+			].filter(Boolean)
+		};
+	} catch {
+		return null;
 	}
 }
 
@@ -766,6 +837,26 @@ async function searchNaverPlaces(input: CandidateInput, query: string, apiKey: s
 			_provider: 'naver'
 		})
 	);
+}
+
+async function searchMapPlacesByQueries(
+	input: CandidateInput,
+	queries: string[],
+	apiKey: string,
+	size: number,
+	maxRows: number
+) {
+	const rows: Record<string, unknown>[] = [];
+	for (const query of queries) {
+		const [kakaoRows, naverRows] = await Promise.allSettled([
+			searchKakaoPlaces(input, query, apiKey, size),
+			searchNaverPlaces(input, query, apiKey, size)
+		]);
+		if (kakaoRows.status === 'fulfilled') rows.push(...kakaoRows.value);
+		if (naverRows.status === 'fulfilled') rows.push(...naverRows.value);
+		if (rows.length >= maxRows) break;
+	}
+	return rows.slice(0, maxRows);
 }
 
 async function getKakaoRoute(
@@ -953,7 +1044,7 @@ async function getParkingCandidate(
 
 function fallbackActivities(input: CandidateInput): ActivityCandidate[] {
 	const baby = input.session.companionConstraints.hasBaby;
-	const freeformKeyword = freeformActivityKeyword(input.profile);
+	const freeformKeyword = freeformActivityKeyword(input.profile, input.session);
 	return [
 		{
 			id: 'fallback-activity-1',
@@ -1033,26 +1124,82 @@ function numberValue(value: unknown) {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function thumbnailFromRow(row: Record<string, unknown>) {
+	return (
+		stringValue(row.thumbnailUrl) ||
+		stringValue(row.thumbnail_url) ||
+		stringValue(row.imageUrl) ||
+		stringValue(row.image_url) ||
+		stringValue(row.mainImageUrl) ||
+		stringValue(row.main_image_url) ||
+		imageUrlFromUnknown(row.images) ||
+		imageUrlFromUnknown(row.image) ||
+		imageUrlFromUnknown(row.thumbnail)
+	);
+}
+
+function imageUrlFromUnknown(value: unknown): string {
+	if (typeof value === 'string') return value;
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const url = imageUrlFromUnknown(item);
+			if (url) return url;
+		}
+		return '';
+	}
+	if (value && typeof value === 'object') {
+		const row = value as Record<string, unknown>;
+		return (
+			stringValue(row.url) ||
+			stringValue(row.src) ||
+			stringValue(row.imageUrl) ||
+			stringValue(row.image_url) ||
+			stringValue(row.thumbnailUrl) ||
+			stringValue(row.thumbnail_url) ||
+			imageUrlFromUnknown(row.images) ||
+			imageUrlFromUnknown(row.image)
+		);
+	}
+	return '';
+}
+
 function apiFuseActivityQueries(input: CandidateInput) {
 	const location = input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울';
-	const freeformKeyword = freeformActivityKeyword(input.profile);
+	const plannedQueries = input.queryPlan?.activityQueries ?? [];
+	const freeformKeyword = freeformActivityKeyword(input.profile, input.session);
 	const baby = input.session.companionConstraints.hasBaby;
 	const base = baby
 		? [`${location} 키즈카페`, `${location} 실내놀이터`, `${location} 유모차 실내`]
-		: input.profile.activityPreferences.includes('culture')
-			? [`${location} 전시`, `${location} 팝업`, `${location} 공연`]
-			: [`${location} 원데이클래스`, `${location} 체험`, `${location} 산책`];
+		: blocksLongActivity(input.session)
+			? [`${location} 카페`, `${location} 전시`, `${location} 팝업`]
+			: input.profile.activityPreferences.includes('culture')
+				? [`${location} 전시`, `${location} 팝업`, `${location} 공연`]
+				: [`${location} 원데이클래스`, `${location} 체험`, `${location} 산책`];
 	return [
-		...new Set([freeformKeyword, ...base].filter((value): value is string => Boolean(value)))
+		...new Set(
+			[...plannedQueries, freeformKeyword, ...base]
+				.filter((value): value is string => Boolean(value))
+				.filter((query) => !isBlockedForSession(input, query))
+		)
 	];
 }
 
 function restaurantPlaceQueries(input: CandidateInput) {
 	const location = input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울';
+	const plannedQueries = input.queryPlan?.restaurantQueries ?? [];
 	const baby = input.session.companionConstraints.hasBaby;
-	return baby
+	const base = baby
 		? [`${location} 키즈 프렌들리 카페`, `${location} 가족 식당`, `${location} 넓은 좌석 카페`]
-		: [`${location} 맛집`, `${location} 카페`, `${location} 캐주얼 다이닝`];
+		: blocksLongActivity(input.session)
+			? [`${location} 카페`, `${location} 디저트`, `${location} 가벼운 식사`]
+			: [`${location} 맛집`, `${location} 카페`, `${location} 캐주얼 다이닝`];
+	return [
+		...new Set([...plannedQueries, ...base].filter((query) => !isBlockedForSession(input, query)))
+	];
+}
+
+function catchtableKeywords(input: CandidateInput) {
+	return restaurantPlaceQueries(input).slice(0, 3);
 }
 
 function placeRowToGeo(row: Record<string, unknown>, fallbackTitle: string): GeoCandidate | null {
@@ -1093,6 +1240,7 @@ function placeRowToActivity(row: Record<string, unknown>, index: number): Activi
 		lat: geo.lat,
 		lng: geo.lng,
 		availabilityText: '지도 장소 후보 확인됨',
+		thumbnailUrl: thumbnailFromRow(row) || undefined,
 		tags: [
 			provider === 'naver' ? '네이버지도' : '카카오맵',
 			category || '장소 후보',
@@ -1123,6 +1271,7 @@ function placeRowToRestaurant(
 		lat: geo.lat,
 		lng: geo.lng,
 		availabilityText: '지도 장소 후보 확인됨',
+		thumbnailUrl: thumbnailFromRow(row) || undefined,
 		tags: [
 			provider === 'naver' ? '네이버지도' : '카카오맵',
 			category || '맛집 후보',
@@ -1177,17 +1326,20 @@ function airQualityLabel(grade: string) {
 
 function myrealtripSearchKeywords(input: CandidateInput) {
 	const locationKeyword = input.session.location?.label.includes('서울') ? '서울' : '';
-	const freeformKeyword = freeformActivityKeyword(input.profile);
+	const plannedKeywords = input.queryPlan?.myrealtripKeywords ?? [];
+	const freeformKeyword = freeformActivityKeyword(input.profile, input.session);
 	const preferenceKeyword = input.session.companionConstraints.hasBaby
 		? '키즈'
-		: input.profile.activityPreferences.includes('culture')
+		: blocksLongActivity(input.session)
 			? '티켓'
-			: '체험';
+			: input.profile.activityPreferences.includes('culture')
+				? '티켓'
+				: '체험';
 	return [
 		...new Set(
-			[locationKeyword, freeformKeyword, preferenceKeyword, '티켓'].filter(
-				(value): value is string => Boolean(value)
-			)
+			[...plannedKeywords, locationKeyword, freeformKeyword, preferenceKeyword, '티켓']
+				.filter((value): value is string => Boolean(value))
+				.filter((keyword) => !isBlockedForSession(input, keyword))
 		)
 	];
 }
@@ -1263,7 +1415,121 @@ function extractMinutes(text: string) {
 	return undefined;
 }
 
-function freeformActivityKeyword(profile: UserProfile) {
+function filterActivitiesForSession(input: CandidateInput, candidates: ActivityCandidate[]) {
+	if (!blocksLongActivity(input.session)) return candidates;
+	return candidates.filter((candidate) => !activityRejectReason(input, candidate));
+}
+
+function activityRejectReason(input: CandidateInput, candidate: ActivityCandidate) {
+	if (!blocksLongActivity(input.session)) return '';
+	const text = [candidate.title, candidate.address, ...candidate.tags].filter(Boolean).join(' ');
+	if (isBlockedForSession(input, text)) return 'long_activity_keyword';
+	if (isRemoteShortWindowCandidate(input, candidate)) return 'not_near_session_location';
+	return '';
+}
+
+function isBlockedForSession(input: CandidateInput, text: string) {
+	if (!blocksLongActivity(input.session)) return false;
+	const excludedKeywords = input.queryPlan?.excludedKeywords ?? [];
+	const normalized = text.replace(/\s/g, '').toLowerCase();
+	const customBlock = excludedKeywords.some((keyword) =>
+		normalized.includes(keyword.replace(/\s/g, '').toLowerCase())
+	);
+	return customBlock || longActivityBlockedPattern.test(text);
+}
+
+function isRemoteShortWindowCandidate(input: CandidateInput, candidate: ActivityCandidate) {
+	const sessionLocation = input.session.location;
+	if (!sessionLocation?.lat || !sessionLocation.lng) return false;
+	const maxMeters = input.session.availableTime === 'one_hour' ? 3500 : 7000;
+	if (candidate.lat != null && candidate.lng != null) {
+		return (
+			distanceMeters(sessionLocation.lat, sessionLocation.lng, candidate.lat, candidate.lng) >
+			maxMeters
+		);
+	}
+	const text = [candidate.title, candidate.address, ...candidate.tags].filter(Boolean).join(' ');
+	if (remoteShortWindowPattern.test(text)) return true;
+	if (candidate.source === 'myrealtrip') return true;
+	return false;
+}
+
+function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: number) {
+	const toRadians = (value: number) => (value * Math.PI) / 180;
+	const earthRadiusMeters = 6371000;
+	const dLat = toRadians(lat2 - lat1);
+	const dLng = toRadians(lng2 - lng1);
+	const a =
+		Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+		Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+	return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+async function logActivityQualityGuard(
+	input: CandidateInput,
+	rawActivities: ActivityCandidate[],
+	keptActivities: ActivityCandidate[]
+) {
+	if (!blocksLongActivity(input.session)) return;
+	const keptKeys = new Set(
+		keptActivities.map((candidate) =>
+			`${candidate.title}-${candidate.address ?? ''}`.replace(/\s/g, '').toLowerCase()
+		)
+	);
+	const rejected = rawActivities
+		.map((candidate) => ({
+			title: candidate.title,
+			source: candidate.source,
+			address: candidate.address,
+			reason: activityRejectReason(input, candidate)
+		}))
+		.filter((candidate) => candidate.reason)
+		.slice(0, 8);
+
+	await logIntegrationEvent({
+		provider: 'internal',
+		kind: 'api',
+		operation: 'candidate.activities.time_location_guard',
+		method: 'INTERNAL',
+		url: 'sai://candidate/activity-guard',
+		ok: true,
+		durationMs: 0,
+		requestPayload: {
+			sessionId: input.session.id,
+			availableTime: input.session.availableTime,
+			startDateTime: input.session.startDateTime,
+			endDateTime: input.session.endDateTime,
+			location: input.session.location,
+			queryPlanSource: input.queryPlan?.source,
+			excludedKeywords: input.queryPlan?.excludedKeywords
+		},
+		responsePayload: {
+			rawCount: rawActivities.length,
+			keptCount: keptActivities.length,
+			rejectedCount: rawActivities.length - keptActivities.length,
+			kept: keptActivities.slice(0, 8).map((candidate) => ({
+				title: candidate.title,
+				source: candidate.source,
+				address: candidate.address
+			})),
+			rejected,
+			droppedByDedupeOrLimit: rawActivities.length - keptKeys.size - rejected.length
+		}
+	});
+}
+
+function blocksLongActivity(session: RecommendationSession) {
+	if (session.availableTime && !['day', 'weekend'].includes(session.availableTime)) return true;
+	const start = session.startDateTime ? new Date(session.startDateTime) : null;
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+	return end.getTime() > start.getTime() && end.getTime() - start.getTime() <= 300 * 60 * 1000;
+}
+
+function freeformActivityKeyword(profile: UserProfile, session: RecommendationSession) {
 	const text = (profile.onboardingFreeformAnswers ?? []).map((answer) => answer.answer).join(' ');
-	return freeformKeywordRules.find((rule) => rule.pattern.test(text))?.activity;
+	const rule = freeformKeywordRules.find((item) => item.pattern.test(text));
+	if (!rule) return undefined;
+	if (blocksLongActivity(session) && rule.shortActivity) return rule.shortActivity;
+	return rule.activity;
 }

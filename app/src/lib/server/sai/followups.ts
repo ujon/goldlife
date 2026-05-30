@@ -88,6 +88,10 @@ async function tryExaoneFollowups(
 						}
 					],
 					response_format: { type: 'json_object' },
+					chat_template_kwargs: { enable_thinking: false },
+					parse_reasoning: true,
+					include_reasoning: false,
+					temperature: 0,
 					max_tokens: 700
 				}),
 				signal: AbortSignal.timeout(8000)

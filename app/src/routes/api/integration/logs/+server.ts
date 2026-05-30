@@ -6,12 +6,15 @@ export const GET: RequestHandler = async ({ url }) => {
 	try {
 		const limit = Number(url.searchParams.get('limit') ?? '30');
 		const since = url.searchParams.get('since') ?? undefined;
+		const includeInternal =
+			url.searchParams.get('includeInternal') === '1' ||
+			url.searchParams.get('includeInternal') === 'true';
 
 		return ok(
 			await listIntegrationLogs({
 				limit: Number.isFinite(limit) ? limit : 30,
 				since,
-				externalOnly: true
+				externalOnly: !includeInternal
 			})
 		);
 	} catch (error) {

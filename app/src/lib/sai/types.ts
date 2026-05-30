@@ -11,7 +11,8 @@ export type Screen =
 	| 'extra'
 	| 'followup'
 	| 'generating'
-	| 'results';
+	| 'results'
+	| 'resultDetail';
 
 export type Situation = 'solo' | 'friend' | 'couple' | 'family' | 'group';
 
@@ -156,6 +157,7 @@ export type RecommendationItem = {
 	lat?: number;
 	lng?: number;
 	availabilityText?: string;
+	thumbnailUrl?: string;
 };
 
 export type RecommendationCard = {

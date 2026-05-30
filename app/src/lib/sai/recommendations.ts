@@ -311,6 +311,20 @@ function applyOnboardingFreeformHints(
 	const reasonHint = `온보딩에서 "${answerSnippet}"라고 말한 것도 같이 반영했어.`;
 
 	if (!baby && /캠핑|글램핑|야영|camp/i.test(combined)) {
+		if (blocksLongActivity(session)) {
+			return cards.map((item, index) => ({
+				...item,
+				reason:
+					index === 0
+						? `${item.reason} 온보딩에서 말한 야외 취향은 기억하되, 이번엔 시간이 짧아서 가까운 활동만 골랐어.`
+						: item.reason,
+				badges:
+					index === 0
+						? [...new Set(['야외 취향은 짧게 반영', '짧은 시간 맞춤', ...item.badges])].slice(0, 8)
+						: item.badges
+			}));
+		}
+
 		const weatherFit: RecommendationCard['weatherFit'] = session.weatherSnapshot.preferIndoor
 			? 'mostly_indoor'
 			: 'outdoor';
@@ -345,6 +359,14 @@ function applyOnboardingFreeformHints(
 		badges:
 			index === 0 ? [...new Set(['온보딩 답변 반영', ...item.badges])].slice(0, 8) : item.badges
 	}));
+}
+
+function blocksLongActivity(session: RecommendationSession) {
+	if (session.availableTime && !['day', 'weekend'].includes(session.availableTime)) return true;
+	const start = session.startDateTime ? new Date(session.startDateTime) : null;
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+	return end.getTime() > start.getTime() && end.getTime() - start.getTime() <= 300 * 60 * 1000;
 }
 
 function baseRecommendations(

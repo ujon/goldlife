@@ -1,5 +1,22 @@
 export type ProviderName = 'genrank' | 'myrealtrip' | 'api_fuse' | 'swing';
 
+export type CandidateApiOperationPlan = {
+	provider: ProviderName | 'exaone' | 'openai';
+	operation: string;
+	values: Record<string, string | number | boolean>;
+	purpose: string;
+};
+
+export type CandidateQueryPlan = {
+	source: 'exaone' | 'fallback';
+	preferenceSummary: string;
+	activityQueries: string[];
+	restaurantQueries: string[];
+	myrealtripKeywords: string[];
+	excludedKeywords: string[];
+	operations: CandidateApiOperationPlan[];
+};
+
 export type ProviderStatus = {
 	provider: ProviderName;
 	configured: boolean;
@@ -19,6 +36,7 @@ export type ActivityCandidate = {
 	lat?: number;
 	lng?: number;
 	availabilityText?: string;
+	thumbnailUrl?: string;
 	tags: string[];
 	score?: number;
 };
@@ -35,6 +53,7 @@ export type RestaurantCandidate = {
 	lat?: number;
 	lng?: number;
 	availabilityText?: string;
+	thumbnailUrl?: string;
 	tags: string[];
 	reservationHint?: string;
 };
@@ -64,4 +83,5 @@ export type CandidateBundle = {
 	restaurants: RestaurantCandidate[];
 	mobility: MobilityCandidate[];
 	statuses: ProviderStatus[];
+	queryPlan?: CandidateQueryPlan;
 };
