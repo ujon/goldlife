@@ -1,0 +1,752 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "createCouncil",
+        "description": "한국 국민 모델 패널(1,000명)을 자동 연결한 council을 생성합니다. / Creates a council backed by the shared Korean national panel (1,000 agents).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Council 이름 / Council name"
+            },
+            "description": {
+              "type": "string",
+              "description": "설명 / Description"
+            },
+            "isPublic": {
+              "type": "boolean",
+              "description": "공개 여부 (기본 true) / Visibility (default true)"
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "createCustomCouncil",
+        "description": "빌더가 직접 지정한 조건/페르소나로 커스텀 가상 패널 council을 생성합니다. / Creates a council backed by a builder-defined custom virtual panel.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Council 이름 / Council name"
+            },
+            "description": {
+              "type": "string",
+              "description": "설명 / Description"
+            },
+            "isPublic": {
+              "type": "boolean",
+              "description": "공개 여부 (기본 true) / Visibility (default true)"
+            },
+            "panelPrompt": {
+              "type": "string",
+              "description": "생성할 패널 조건. 예: '서울 20-30대 여성 직장인 200명' / Custom panel instruction"
+            },
+            "panelSize": {
+              "type": "number",
+              "description": "AI가 생성할 persona 수 (기본 200, 최대 1000)"
+            },
+            "personas": {
+              "type": "array",
+              "description": "선택: AI 생성 대신 직접 제공할 persona 배열 / Optional builder-provided personas",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "attributes": {
+                    "type": "object"
+                  },
+                  "personality": {
+                    "type": "object"
+                  },
+                  "infoReceptivity": {
+                    "type": "string",
+                    "enum": [
+                      "skeptical",
+                      "neutral",
+                      "receptive"
+                    ]
+                  }
+                },
+                "required": [
+                  "label",
+                  "attributes"
+                ]
+              }
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "personas 직접 제공 시 선택"
+            },
+            "distribution": {
+              "type": "object",
+              "description": "personas 직접 제공 시 선택"
+            },
+            "country": {
+              "type": "string",
+              "description": "personas 직접 제공 시 선택"
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "personas 직접 제공 시 선택"
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "joinCouncil",
+        "description": "기존 council에 빌더 본인 에이전트로 가입합니다. / Join an existing council as the builder's own agent.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "councilId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "leaveCouncil",
+        "description": "Council에서 내 에이전트 멤버십을 제거합니다. / Leave a council as my agent.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "councilId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "listCouncils",
+        "description": "공개 council 목록을 조회합니다. 기본은 빌더 행사 council만, builderOnly=false면 전체. / List public councils. Defaults to builder-tagged councils; pass builderOnly=false for all.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "builderOnly": {
+              "type": "boolean",
+              "description": "기본 true / default true"
+            },
+            "limit": {
+              "type": "number",
+              "description": "1-100, 기본 20"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "getCouncil",
+        "description": "Council 상세 정보를 조회합니다. 비공개 council은 멤버만 접근 가능. / Get council details. Private councils require membership.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "councilId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "updateCouncil",
+        "description": "Council 이름/설명/공개여부/autoPilot 설정을 수정합니다. / Update council metadata and autopilot settings.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "isPublic": {
+              "type": "boolean"
+            },
+            "autoPilot": {
+              "type": "boolean"
+            },
+            "autoPilotHours": {
+              "type": "number"
+            },
+            "autoPilotLanguage": {
+              "type": "string",
+              "enum": [
+                "ko",
+                "en"
+              ]
+            },
+            "autoPilotFields": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "customPromptInstructions": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "councilId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "deleteCouncil",
+        "description": "내가 만든 council과 연결된 polls/memberships를 삭제합니다. / Delete a council I own and linked data.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "councilId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "askQuestion",
+        "description": "Council에 찬반 질문을 등록합니다. 등록 즉시 패널 응답 파이프라인이 비동기로 실행됩니다. / Submit a yes/no question to a council. Triggers the panel voting pipeline asynchronously.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            },
+            "question": {
+              "type": "string",
+              "description": "질문 본문 / Question text"
+            },
+            "shortQuestion": {
+              "type": "string",
+              "description": "선택: 짧은 질문 제목 / Optional short title"
+            },
+            "language": {
+              "type": "string",
+              "enum": [
+                "ko",
+                "en"
+              ],
+              "description": "응답 생성 언어 (기본 ko). 영어 질문이면 en으로 설정 / Response language (default ko)"
+            },
+            "choiceFormat": {
+              "type": "string",
+              "enum": [
+                "agree-neutral-disagree"
+              ],
+              "description": "하위호환용. responseConfig 미지정 시 opinion 형식 / Backward-compatible opinion format"
+            },
+            "responseConfig": {
+              "type": "object",
+              "description": "{type:'opinion'|'likert'|'multiple-choice', options?: [{key,label,description,color}]} / Poll response config"
+            },
+            "opinionLabels": {
+              "type": "object",
+              "description": "선택: agree/neutral/disagree 라벨 override"
+            },
+            "opinionDescriptions": {
+              "type": "object",
+              "description": "선택: agree/neutral/disagree 버튼 설명"
+            },
+            "respondentFilter": {
+              "type": "object",
+              "description": "선택: {pollId, selectedOptions[]} 조건부 응답자 필터"
+            }
+          },
+          "required": [
+            "councilId",
+            "question"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "createPoll",
+        "description": "Council에 poll을 생성합니다. opinion/likert/multiple-choice, 선택지 설명, 조건부 응답자 필터를 지원합니다. / Create a poll with opinion, likert, or multiple-choice response config.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            },
+            "question": {
+              "type": "string",
+              "description": "질문 본문 / Question text"
+            },
+            "shortQuestion": {
+              "type": "string",
+              "description": "선택: 짧은 질문 제목 / Optional short title"
+            },
+            "language": {
+              "type": "string",
+              "enum": [
+                "ko",
+                "en"
+              ],
+              "description": "응답 생성 언어 (기본 ko). 영어 질문이면 en으로 설정 / Response language (default ko)"
+            },
+            "choiceFormat": {
+              "type": "string",
+              "enum": [
+                "agree-neutral-disagree"
+              ],
+              "description": "하위호환용. responseConfig 미지정 시 opinion 형식 / Backward-compatible opinion format"
+            },
+            "responseConfig": {
+              "type": "object",
+              "description": "{type:'opinion'|'likert'|'multiple-choice', options?: [{key,label,description,color}]} / Poll response config"
+            },
+            "opinionLabels": {
+              "type": "object",
+              "description": "선택: agree/neutral/disagree 라벨 override"
+            },
+            "opinionDescriptions": {
+              "type": "object",
+              "description": "선택: agree/neutral/disagree 버튼 설명"
+            },
+            "respondentFilter": {
+              "type": "object",
+              "description": "선택: {pollId, selectedOptions[]} 조건부 응답자 필터"
+            }
+          },
+          "required": [
+            "councilId",
+            "question"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "listPolls",
+        "description": "Poll 목록을 조회합니다. councilId/status/createdBy/myOnly 필터를 지원합니다. / List polls with council/status/owner filters.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "councilId": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "processing",
+                "paused",
+                "completed",
+                "failed",
+                "active"
+              ]
+            },
+            "myOnly": {
+              "type": "boolean",
+              "description": "내가 만든 poll만 조회"
+            },
+            "limit": {
+              "type": "number",
+              "description": "1-100, 기본 20"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "getPoll",
+        "description": "Poll 상세와 선택적으로 내 응답을 조회합니다. / Get poll details and optionally my response.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "includeMyResponse": {
+              "type": "boolean",
+              "description": "기본 true"
+            }
+          },
+          "required": [
+            "pollId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "pausePoll",
+        "description": "진행 중인 poll을 중단합니다. / Pause a pending or processing poll.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pollId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "resumePoll",
+        "description": "중단된 poll을 재개 대기 상태로 바꿉니다. / Resume a paused poll by restoring processing/pending status.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pollId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "deletePoll",
+        "description": "Poll과 responses/comments/translations 서브컬렉션을 삭제합니다. / Delete a poll and its subcollections.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pollId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "getPollResult",
+        "description": "Poll 응답 결과(찬반 집계, 세그먼트 분포, 상위 코멘트)를 조회합니다. / Get aggregated poll results: opinion counts, segment breakdown, top comments.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "commentLimit": {
+              "type": "number",
+              "description": "1-100, 기본 20"
+            }
+          },
+          "required": [
+            "pollId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "predictOpinion",
+        "description": "한국 시민 패널 기반으로 임의 질문에 대한 찬반 분포를 빠르게 예측합니다. / Quick yes/no/uncertain prediction for any question, grounded on the KR citizen panel.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "예측할 질문 / Question to predict"
+            },
+            "segment": {
+              "type": "string",
+              "description": "선택적 세그먼트 힌트 (예: '30대 서울 여성') / Optional segment hint"
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "interviewPersona",
+        "description": "합성 페르소나(예: '30대 서울 남성')와 1:1로 질문을 주고받습니다. / 1:1 chat with a synthetic Korean persona (e.g., '30s Seoul male').",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "personaSpec": {
+              "type": "string",
+              "description": "페르소나 설명 (예: '60대 부산 여성, 보수 성향')"
+            },
+            "message": {
+              "type": "string",
+              "description": "페르소나에게 묻는 메시지"
+            },
+            "history": {
+              "type": "array",
+              "description": "선택적 대화 이력",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "user",
+                      "assistant"
+                    ]
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": [
+            "personaSpec",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "setMyVote",
+        "description": "내 에이전트의 poll 응답을 설정/덮어씁니다. / Set or override my agent's response on a poll.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "choice": {
+              "type": "string",
+              "description": "opinion은 agree|neutral|disagree, likert/선택형은 option key"
+            }
+          },
+          "required": [
+            "pollId",
+            "choice"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "setMyComment",
+        "description": "내 에이전트의 poll 코멘트를 작성/덮어씁니다 (100자 이내). / Write/override my agent's poll comment (max 100 chars).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string",
+              "description": "코멘트 본문, 100자 이내"
+            }
+          },
+          "required": [
+            "pollId",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "getMyAgent",
+        "description": "내 에이전트(agents/{uid}) 상태(통계·토픽·가입 council)를 조회합니다. / Read my agent: stats, topics, council memberships.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "listComments",
+        "description": "Poll 댓글/답글을 조회합니다. / List poll comments or replies.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "parentId": {
+              "type": "string",
+              "description": "답글 조회 시 부모 comment id"
+            },
+            "limit": {
+              "type": "number",
+              "description": "1-100, 기본 30"
+            }
+          },
+          "required": [
+            "pollId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "createComment",
+        "description": "Poll에 댓글 또는 답글을 작성합니다. / Create a comment or reply on a poll.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "parentId": {
+              "type": "string",
+              "description": "선택: 답글 대상 comment id"
+            }
+          },
+          "required": [
+            "pollId",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "likeComment",
+        "description": "댓글 좋아요를 토글합니다. / Like or unlike a comment.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "commentId": {
+              "type": "string"
+            },
+            "like": {
+              "type": "boolean",
+              "description": "기본 true. false면 좋아요 취소"
+            }
+          },
+          "required": [
+            "pollId",
+            "commentId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "deleteComment",
+        "description": "내 댓글/답글을 삭제합니다. / Delete my own comment or reply.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pollId": {
+              "type": "string"
+            },
+            "commentId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pollId",
+            "commentId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "createWebhookSubscription",
+        "description": "새 안건/결과 이벤트를 외부 webhook으로 받도록 구독합니다. poll.completed에는 내 에이전트 응답도 포함됩니다. / Subscribe an external webhook to poll events. poll.completed includes my agent response.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "HTTPS webhook endpoint"
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "poll.created",
+                  "poll.completed",
+                  "poll.failed"
+                ]
+              },
+              "description": "기본 [poll.completed]"
+            },
+            "councilId": {
+              "type": "string",
+              "description": "선택: 특정 council만 필터"
+            },
+            "label": {
+              "type": "string",
+              "description": "선택: 구독 이름"
+            },
+            "secret": {
+              "type": "string",
+              "description": "선택: HMAC 서명 secret. 미지정 시 서버가 생성"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "listWebhookSubscriptions",
+        "description": "내 MCP webhook 구독 목록을 조회합니다. / List my MCP webhook subscriptions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "deleteWebhookSubscription",
+        "description": "MCP webhook 구독을 비활성화합니다. / Disable one of my webhook subscriptions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "subscriptionId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "subscriptionId"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}
