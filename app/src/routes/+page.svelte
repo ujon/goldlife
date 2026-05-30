@@ -334,9 +334,7 @@
 		screen === 'generating' ? 'thinking' : screen === 'results' ? 'happy' : 'idle'
 	);
 	let progress = $derived(
-		screen === 'onboarding' && onboardingIntroVisible
-			? { current: 0, total: 0, label: '' }
-			: getProgress(screen, onboardingIndex, followupIndex, followupQuestions.length)
+		getProgress(screen, onboardingIndex, followupIndex, followupQuestions.length)
 	);
 	let progressPercent = $derived(
 		progress.total ? `${Math.min(100, (progress.current / progress.total) * 100)}%` : '0%'
@@ -1728,14 +1726,17 @@
 				{#if onboardingIntroVisible}
 					<div class="onboarding-coach">
 						<div class="onboarding-bubble onboarding-intro-bubble">
-							<p class="eyebrow">처음 만났네</p>
+							<p class="eyebrow">온보딩</p>
 							<h1>안녕, 나는 사이야.</h1>
 							<p>
 								너한테 더 잘 맞는 선택지를 찾아주려고, 먼저 너를 조금 알아보는 질문을
 								몇 개만 할게.
 							</p>
 						</div>
-						<div class="onboarding-mascot-ring onboarding-intro-mascot-ring" aria-hidden="true">
+						<div
+							class="onboarding-mascot-ring onboarding-intro-mascot-ring"
+							aria-hidden="true"
+						>
 							<div class="mascot mascot-happy onboarding-mascot">
 								<img src={saiSymbol} alt="" />
 							</div>
