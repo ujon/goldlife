@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="사이 앱 아이콘">
+  <defs>
+    <linearGradient id="icBody" x1="0.1" y1="0.05" x2="0.92" y2="0.98">
+      <stop offset="0" stop-color="#FF6B5E"></stop>
+      <stop offset="0.55" stop-color="#B45EE8"></stop>
+      <stop offset="1" stop-color="#5B6CFF"></stop>
+    </linearGradient>
+    <radialGradient id="icGloss" cx="0.36" cy="0.32" r="0.5">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"></stop>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"></stop>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" rx="118" fill="url(#icBody)"></rect>
+  <ellipse cx="180" cy="150" rx="120" ry="80" fill="url(#icGloss)"></ellipse>
+  
+  <ellipse cx="198" cy="248" rx="27" ry="35" fill="#ffffff"></ellipse>
+  <ellipse cx="314" cy="248" rx="27" ry="35" fill="#ffffff"></ellipse>
+  <path d="M212 312 Q256 360 300 312" fill="none" stroke="#ffffff" stroke-width="17" stroke-linecap="round"></path>
+</svg>

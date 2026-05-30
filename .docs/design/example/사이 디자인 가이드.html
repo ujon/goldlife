@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사이 (SAI) · 디자인 가이드</title>
+<link rel="stylesheet" href="mascot.css">
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<template id="__bundler_thumbnail">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <rect width="100" height="100" rx="22" fill="#211C2B"/>
+    <defs><linearGradient id="tb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF6B5E"/><stop offset="0.55" stop-color="#B45EE8"/><stop offset="1" stop-color="#5B6CFF"/></linearGradient></defs>
+    <rect x="30" y="30" width="40" height="44" rx="14" fill="url(#tb)"/>
+    <rect x="49" y="22" width="2" height="9" rx="1" fill="#B45EE8"/><circle cx="50" cy="20" r="3.4" fill="#fff"/>
+    <circle cx="42" cy="50" r="4" fill="#2A2140"/><circle cx="58" cy="50" r="4" fill="#2A2140"/>
+    <path d="M44 60 Q50 66 56 60" fill="none" stroke="#2A2140" stroke-width="2.4" stroke-linecap="round"/>
+  </svg>
+</template>
+
+<div class="topnav"><div class="inner">
+  <div class="lockup"><div class="bead" style="--b:24px"><span class="ant"></span><span class="ball"></span><span class="ey l"></span><span class="ey r"></span></div><b style="font-size:15px;letter-spacing:-.03em">사이</b></div>
+  <div class="links">
+    <a href="#logo">로고</a><a href="#brand">브랜드</a><a href="#mascot">마스코트</a><a href="#color">컬러</a>
+    <a href="#type">타이포</a><a href="#token">토큰</a><a href="#comp">컴포넌트</a><a href="#card">추천카드</a>
+    <a href="#screen">화면</a><a href="#state">상태</a><a href="#handoff">핸드오프</a>
+  </div>
+</div></div>
+
+<div class="wrap">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap">
+      <div data-mascot="happy" data-size="132"></div>
+      <div>
+        <div class="kick">SAI · Design Guide</div>
+        <h1>상황을 이해하는<br>AI 추천, 사이</h1>
+        <p>시간과 돈 <b>사이</b>에서 가장 괜찮은 선택지를 찾아주는 AI. 이 문서는 마스코트·로고·컬러·컴포넌트·화면 명세를 담아 <b>바로 개발 착수</b>할 수 있게 정리한 디자인 가이드입니다.</p>
+        <div class="meta">
+          <span class="metachip">v0.2 · 2026-05-30</span>
+          <span class="metachip">모바일 우선 · 라이트</span>
+          <span class="metachip">Pretendard</span>
+          <span class="metachip">Duolingo식 코치 톤</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 01 LOGO -->
+  <section class="sec" id="logo">
+    <div class="sec-h"><span class="sec-n">01</span><h2>로고</h2></div>
+    <p class="sec-sub">제품의 핵심은 “둘/여럿 <b>사이</b>에서 답을 찾는 AI”. 마스코트 DNA를 그대로 압축한 <b>비드(bead) 심볼 + 사이 워드마크</b> 락업을 4안 중 선정안으로 채택했습니다. 마스코트 얼굴이 곧 앱 아이콘이 되어 스케일·모노 모두 안정적입니다.</p>
+
+    <div class="logo-board">
+      <div class="logo-cell">
+        <span class="logo-cap">A · 비드 락업</span><span class="pickflag">선정</span>
+        <div class="lockup"><div class="bead"><span class="ant"></span><span class="ball"></span><span class="ey l"></span><span class="ey r"></span></div>
+          <div style="display:flex;flex-direction:column;line-height:1"><span class="wordmark">사이</span><span class="sub" style="margin-top:4px">Situation-aware AI</span></div></div>
+      </div>
+      <div class="logo-cell">
+        <span class="logo-cap">B · 마스코트 풀 락업</span>
+        <div class="lockup" style="gap:14px"><div data-mascot="idle" data-size="60"></div><span class="wordmark" style="font-size:38px">사이</span></div>
+      </div>
+      <div class="logo-cell">
+        <span class="logo-cap">C · SAI 라틴</span>
+        <span class="sai-latin"><span style="color:var(--ink)">S</span><span class="wordmark grad" style="font-size:38px;letter-spacing:-.02em">AI</span></span>
+        <span class="sub">Situation-aware AI</span>
+      </div>
+      <div class="logo-cell">
+        <span class="logo-cap">D · ㅅ 모노 타일</span>
+        <div class="mono-tile"><span class="s">ㅅ</span></div>
+      </div>
+    </div>
+
+    <div class="grid g3" style="margin-top:18px">
+      <div class="panel" style="text-align:center"><div class="label" style="margin-bottom:14px">App Icon</div>
+        <div class="appicon" style="margin:0 auto"><div class="face"><span class="ey l"></span><span class="ey r"></span><span class="mo"></span></div></div>
+      </div>
+      <div class="logo-cell grad" style="min-height:120px"><span class="logo-cap" style="color:rgba(255,255,255,.7)">반전 · 그라데이션 위</span>
+        <div class="lockup"><div class="bead" style="--b:36px"><span class="ball" style="background:#fff;box-shadow:none"></span><span class="ey l" style="background:var(--violet)"></span><span class="ey r" style="background:var(--violet)"></span></div><span class="wordmark white" style="font-size:34px">사이</span></div>
+      </div>
+      <div class="logo-cell dark" style="min-height:120px"><span class="logo-cap" style="color:rgba(255,255,255,.5)">다크 · 잉크 위</span>
+        <div class="lockup"><div class="bead" style="--b:36px"><span class="ant"></span><span class="ball"></span><span class="ey l"></span><span class="ey r"></span></div><span class="wordmark white" style="font-size:34px">사이</span></div>
+      </div>
+    </div>
+
+    <div class="usage" style="margin-top:18px">
+      <div class="ucard do"><h4 class="do">권장</h4>비드 심볼은 항상 안테나 비드를 살린다 · 워드마크는 Pretendard 800 · 최소 여백 = 비드 높이의 50% · 모노일 땐 잉크 단색.</div>
+      <div class="ucard dont"><h4 class="dont">금지</h4>그라데이션 각도 변경·회전 금지 · 워드마크 자간 임의 변경 금지 · 마스코트와 워드마크를 세로로 겹쳐 쌓지 않기 · 비드를 정원(완전한 원)으로 찌그러뜨리지 않기.</div>
+    </div>
+  </section>
+
+  <!-- 02 BRAND -->
+  <section class="sec" id="brand">
+    <div class="sec-h"><span class="sec-n">02</span><h2>브랜드 · 무드 · 보이스</h2></div>
+    <p class="sec-sub">한 줄 무드: <b>“혼자도 여럿도, 시간·돈 안에서 가볍게 떠나는 주말 큐레이터.”</b></p>
+    <div class="grid g3">
+      <div class="panel"><div class="label">무드 키워드</div>
+        <ul class="clean" style="margin-top:8px"><li>따뜻함 · 트렌디 · 장난기</li><li>가볍고 친근한 코치(Duolingo)</li><li>깔끔 · 넉넉한 여백 · 큰 라운드</li></ul></div>
+      <div class="panel"><div class="label">톤 오브 보이스</div>
+        <ul class="clean" style="margin-top:8px"><li>친구처럼 <b>반말</b>, 무례하지 않게</li><li>짧게 묻고 가볍게 리액션</li><li>실패해도 압박 안 함</li><li>“ㅋㅋ” 섞인 캐주얼 카피 OK</li></ul></div>
+      <div class="panel"><div class="label">피해야 할 것</div>
+        <ul class="clean" style="margin-top:8px"><li>광고 리스트 같은 추천 화면</li><li>정보 빽빽한 대시보드</li><li>평가하는 듯한 성향 질문</li><li>딱딱한 권한 요청</li></ul></div>
+    </div>
+    <div class="panel" style="margin-top:18px;display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+      <div data-mascot="talking" data-size="74"></div>
+      <div><div class="label">카피 예시</div>
+        <div class="note" style="margin-top:6px;font-size:15px;color:var(--ink2)">“좋아, 너 취향부터 살짝 알아볼게.” · “오늘 비 와서 실내가 편할 듯!” · “예산보다 8,000원 여유 있어 :)” · “괜찮아, 싫으면 지역 직접 골라도 돼.”</div></div>
+    </div>
+  </section>
+
+  <!-- 03 MASCOT -->
+  <section class="sec" id="mascot">
+    <div class="sec-h"><span class="sec-n">03</span><h2>마스코트 “사이”</h2></div>
+    <p class="sec-sub">전 과정의 안내자(host). 몸 색은 <b>코럴(따뜻함)→인디고(차분함)</b> 그라데이션 = 시간과 돈, 사람과 사람 “사이”의 블렌드. 머리 위 안테나로 사용자의 입력을 ‘수신’합니다. <b>CSS 기하 프리미티브</b>로 제작 — 추후 일러스트 교체 용이.</p>
+    <div class="statesheet" id="statesheet"></div>
+
+    <div class="panel" style="margin-top:18px">
+      <div class="label" style="margin-bottom:10px">화면별 사용 머ABap · 음성 정책</div>
+      <div class="usage">
+        <div class="ucard do"><h4 class="do">음성 사용 — 메인 서비스만</h4>
+          <b>시간·예산 입력, AI 추가 질문, 추천 결과(TTS)</b>에서 마이크 3상태 + 실시간 전사 + 자막을 쓴다. (우리가 함께 잡은 보이스 인터랙션)</div>
+        <div class="ucard dont"><h4 class="dont">음성 미사용 — 가입·온보딩</h4>
+          <b>로그인/회원가입, 위치 권한, 고정 온보딩</b>은 탭 기반. 마스코트는 코치로 등장하되 마이크는 띄우지 않는다.</div>
+      </div>
+      <div class="note" style="margin-top:14px"><b>상태 매핑</b> — 로그인/홈 <span class="spec">idle</span> · 시간·예산·AI질문 듣기 <span class="spec">listening</span> · 추천 생성 <span class="spec">thinking</span> · 이유 읽기 <span class="spec">talking</span> · 추천 완성/좋아요 <span class="spec">happy</span></div>
+    </div>
+  </section>
+
+  <!-- 04 COLOR -->
+  <section class="sec" id="color">
+    <div class="sec-h"><span class="sec-n">04</span><h2>컬러</h2></div>
+    <p class="sec-sub">브랜드 그라데이션(코럴→바이올렛→인디고)은 <b>AI/사이/CTA</b>에만. 화면 대부분은 웜 뉴트럴 + 화이트 카드로 차분하게. 상황(혼자·친구·커플·가족·모임)은 같은 명도·채도의 <b>저채도 틴트</b>로만 구분(무지개 금지).</p>
+    <div class="grid g4" id="colorgrid"></div>
+    <div class="label" style="margin:26px 0 12px">상황 액센트 (oklch · 동일 L/C, 색상만 변화)</div>
+    <div class="grid g4" id="situgrid"></div>
+    <div class="panel" style="margin-top:18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="height:48px;width:280px;border-radius:12px;background:var(--grad);box-shadow:var(--e1)"></div>
+      <div class="note"><b>Brand Gradient</b> · <span class="spec">linear-gradient(90deg, #FF6B5E, #B45EE8 55%, #5B6CFF)</span> — 각도/정지점 고정. 텍스트엔 background-clip, 면엔 CTA·미터·마이크 링.</div>
+    </div>
+  </section>
+
+  <!-- 05 TYPE -->
+  <section class="sec" id="type">
+    <div class="sec-h"><span class="sec-n">05</span><h2>타이포그래피</h2></div>
+    <p class="sec-sub">한글 가독성 위해 <b>Pretendard</b> 단일 패밀리. 질문 헤드라인은 크고 굵게(800), 보조는 작고 차분하게(500) — 대비를 강하게.</p>
+    <div class="panel" id="typescale"></div>
+  </section>
+
+  <!-- 06 TOKENS -->
+  <section class="sec" id="token">
+    <div class="sec-h"><span class="sec-n">06</span><h2>형태 · 스페이싱 · 엘리베이션</h2></div>
+    <div class="grid g3">
+      <div class="panel"><div class="label">Radius</div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:14px">
+          ${['12','16','20','24'].map(r=>`<div style="text-align:center"><div style="width:52px;height:52px;background:#fff;box-shadow:var(--e1);border-radius:${r}px;border:1.5px solid var(--line)"></div><div class="hex" style="font-size:10px;margin-top:5px;font-family:ui-monospace">${r}</div></div>`).join("")}
+          <div style="text-align:center"><div style="width:52px;height:52px;background:#fff;box-shadow:var(--e1);border-radius:999px;border:1.5px solid var(--line)"></div><div class="hex" style="font-size:10px;margin-top:5px;font-family:ui-monospace">pill</div></div>
+        </div>
+        <div class="note" style="margin-top:12px;font-size:12px">카드 기본 <span class="spec">20</span> · 큰 카드 <span class="spec">24</span> · 칩/버튼 <span class="spec">16/pill</span></div></div>
+      <div class="panel"><div class="label">Spacing · 4px 그리드</div>
+        <div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap;margin-top:16px">${['4','8','12','16','20','24','32'].map(s=>`<div style="text-align:center"><div style="width:${s}px;height:${s}px;background:var(--violet);border-radius:3px;opacity:.8"></div><div class="hex" style="font-size:9px;margin-top:6px">${s}</div></div>`).join("")}</div>
+        <div class="note" style="margin-top:18px;font-size:12px">화면 좌우 패딩 <span class="spec">22</span> · 카드 내부 <span class="spec">16–18</span> · 섹션 간 <span class="spec">14</span></div></div>
+      <div class="panel"><div class="label">Elevation</div>
+        <div style="display:flex;gap:14px;margin-top:16px">
+          <div style="width:60px;height:60px;border-radius:14px;background:#fff;box-shadow:var(--e1)"></div>
+          <div style="width:60px;height:60px;border-radius:14px;background:#fff;box-shadow:var(--e2)"></div>
+          <div style="width:60px;height:60px;border-radius:14px;background:#fff;box-shadow:var(--e3)"></div>
+        </div>
+        <div class="note" style="margin-top:14px;font-size:12px"><span class="spec">e1</span> 칩·작은카드 · <span class="spec">e2</span> 추천카드 · <span class="spec">e3</span> 시트·플로팅</div></div>
+    </div>
+  </section>
+
+  <!-- 07 COMPONENTS -->
+  <section class="sec" id="comp">
+    <div class="sec-h"><span class="sec-n">07</span><h2>컴포넌트</h2></div>
+    <p class="sec-sub">탭 타깃 ≥ 44px · 1차 액션은 하단 도달권 · 입력 화면 음성은 메인 서비스에서만.</p>
+
+    <div class="grid g2">
+      <div class="panel"><div class="label" style="margin-bottom:14px">버튼</div>
+        <div class="demo"><button class="btn primary">추천받기</button><button class="btn secondary">지역 고르기</button><button class="btn ghost">건너뛰기</button><button class="btn disabled">다음</button></div></div>
+      <div class="panel"><div class="label" style="margin-bottom:14px">칩 (시간·예산·답변)</div>
+        <div class="demo"><span class="chip on">반나절</span><span class="chip">하루</span><span class="chip">이번 주말</span><span class="chip accent">직접 입력</span></div></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:18px">
+      <div class="panel"><div class="label" style="margin-bottom:14px">상황 세그먼트</div>
+        <div class="demo"><div class="segwrap">
+          <div class="segc solo"><div class="ic">🙋</div><div class="t">혼자</div></div>
+          <div class="segc friend on"><div class="ic">🧑‍🤝‍🧑</div><div class="t">친구</div></div>
+          <div class="segc couple"><div class="ic">💑</div><div class="t">커플</div></div>
+          <div class="segc family"><div class="ic">👨‍👩‍👧</div><div class="t">가족</div></div>
+        </div></div></div>
+      <div class="panel"><div class="label" style="margin-bottom:14px">입력 필드</div>
+        <div class="demo col"><div class="field focus">you@email.com</div><div class="field ph">비밀번호</div></div></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:18px">
+      <div class="panel"><div class="label" style="margin-bottom:14px">마이크 3상태 <span style="color:var(--coral)">· 메인 서비스 전용</span></div>
+        <div class="demo" id="micstates" style="justify-content:space-around"></div></div>
+      <div class="panel"><div class="label" style="margin-bottom:14px">진행 스테퍼 · AI 말풍선</div>
+        <div class="demo col" style="gap:18px">
+          <div class="stepper"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></div>
+          <div class="qbubble"><div data-mascot="thinking" data-size="44"></div><div class="say"><span class="nm">사이</span>수다 위주가 좋아, 같이 뭔가 하는 게 좋아?</div></div>
+        </div></div>
+    </div>
+
+    <div class="panel" style="margin-top:18px"><div class="label" style="margin-bottom:14px">피드백 바 · 배지</div>
+      <div class="demo col" style="gap:14px">
+        <div class="fbbar"><div class="fbtn good on">👍 좋아</div><div class="fbtn bad">👎 별로</div></div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap"><span class="badge g">예산 여유</span><span class="badge b">도보 6분</span><span class="badge w">실내</span><span class="badge a">유모차 OK</span><span class="badge b">주차 가능</span></div>
+      </div></div>
+  </section>
+
+  <!-- 08 REC CARD -->
+  <section class="sec" id="card">
+    <div class="sec-h"><span class="sec-n">08</span><h2>추천 카드</h2></div>
+    <p class="sec-sub">항상 <b>3개</b>. 라벨은 AI가 상황 따라 생성. 카드는 <b>“왜 맞는지(이유)”를 먼저</b> 보여주고 → 시간 → 비용 → 위치/이동 → 날씨 → CTA 순.</p>
+    <div class="grid g2">
+      <div>
+        <div class="label" style="margin-bottom:10px">기본 추천 카드 (이유 우선)</div>
+        <div class="rec">
+          <div class="top">
+            <span class="lab">🌧 비 오는 날 실내픽</span>
+            <div class="ttl">실내 원데이클래스 + 캐주얼 다이닝</div>
+            <div class="why"><span class="k">왜 이걸 골랐냐면</span>친구랑 같이 뭔가 하고 싶다고 했고, 오늘 비가 와서 이동이 짧은 실내 코스로 골랐어.</div>
+          </div>
+          <div class="plan">
+            <div class="stat"><span class="k">TIME</span><span class="v">4시간</span></div><div class="statsep"></div>
+            <div class="stat"><span class="k">COST</span><span class="v">9.2만</span></div><div class="statsep"></div>
+            <div class="stat"><span class="k">1인당</span><span class="v">4.6만</span></div><div class="statsep"></div>
+            <div class="stat"><span class="k">ROUTE</span><span class="v">도보 6분</span></div>
+          </div>
+          <div class="items">
+            <div class="item"><div class="ph"></div><div><div class="nm">도자기 원데이 클래스</div><div class="pr">₩56,000 · 마이리얼트립</div></div><span class="go">예약 →</span></div>
+            <div class="item"><div class="ph"></div><div><div class="nm">캐주얼 파스타 다이닝</div><div class="pr">₩36,000 · 캐치테이블</div></div><span class="go">상세 →</span></div>
+          </div>
+          <div class="badges"><span class="badge g">예산 8천 여유</span><span class="badge w">실내</span><span class="badge b">대중교통 1정거장</span></div>
+          <button class="cta">전체 코스 보기 ↗</button>
+        </div>
+      </div>
+      <div>
+        <div class="label" style="margin-bottom:10px">아기 동반 변형 (UC-002) · 편의시설 우선</div>
+        <div class="rec">
+          <div class="top">
+            <span class="lab">🌲 아기랑 숲냄새 픽</span>
+            <div class="ttl">유모차 가능한 완만한 숲길 + 브런치</div>
+            <div class="why"><span class="k">왜 이걸 골랐냐면</span>등산 취향은 살리되 아기 이동 부담을 줄였어. 유모차로 끝까지 갈 수 있는 코스야.</div>
+          </div>
+          <div class="plan">
+            <div class="stat"><span class="k">TIME</span><span class="v">반나절</span></div><div class="statsep"></div>
+            <div class="stat"><span class="k">COST</span><span class="v">11만</span></div><div class="statsep"></div>
+            <div class="stat"><span class="k">날씨</span><span class="v">맑음 ☀️</span></div>
+          </div>
+          <div class="badges" style="padding-bottom:6px">
+            <span class="badge a">유모차 OK</span><span class="badge g">수유실 있음</span><span class="badge g">기저귀 교체</span><span class="badge b">주차 가능</span><span class="badge w">화장실 가까움</span>
+          </div>
+          <div class="note" style="padding:0 18px 14px;font-size:12px">아기 포함 세션은 <b>안전·인프라가 부모 취향보다 우선</b>. 정보 부족 후보는 <span class="spec">정보 부족</span> 표기·하향 랭킹.</div>
+          <button class="cta">길찾기 + 상세 ↗</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 SCREENS -->
+  <section class="sec" id="screen">
+    <div class="sec-h"><span class="sec-n">09</span><h2>화면 명세</h2></div>
+    <p class="sec-sub">로그인 → 위치 → 온보딩 → 홈 → 상황 → 시간 → 예산 → AI 질문 → 추천 3개 → 피드백. 상단(컨텍스트)·본문(콘텐츠)·하단(주 액션) 3단 골격, 하단 CTA sticky.</p>
+    <div class="mockrow" id="screens1" style="margin-bottom:10px"></div>
+    <div class="mockrow" id="screens2"></div>
+  </section>
+
+  <!-- 10 STATES -->
+  <section class="sec" id="state">
+    <div class="sec-h"><span class="sec-n">10</span><h2>상태 · 폴백</h2></div>
+    <div class="grid g3">
+      <div class="panel"><div class="label">로딩</div><div class="note" style="margin-top:8px">추천 생성 중 → 마스코트 <span class="spec">thinking</span> + 카드 스켈레톤. “AI 친구들이 잠깐 회의했어” 정도로 가볍게(tobl 연출은 접거나 빠르게).</div></div>
+      <div class="panel"><div class="label">빈 결과 fallback</div><div class="note" style="margin-top:8px">조건 만족 후보 부족 시 → <b>예산 늘리기 / 이동범위 넓히기 / 집·온라인 추천 보기</b> 액션 칩 제시. 에러처럼 보이지 않게.</div></div>
+      <div class="panel"><div class="label">권한·STT 실패</div><div class="note" style="margin-top:8px">위치 거부 → 지역 직접 입력. 음성 인식 실패 → 칩/직접입력으로 자연 폴백(메인 화면). 압박 카피 금지.</div></div>
+    </div>
+    <div class="panel" style="margin-top:18px">
+      <div class="label" style="margin-bottom:10px">모션 원칙</div>
+      <div class="note">화면 전환 가로 슬라이드(360ms) · 카드 stagger fade-up(0.05s 간격) · 탭 시 scale 0.97 + 햅틱 · 마이크 idle→listening→processing · 예산 미터 채움(초과 시 경고색) · <span class="spec">prefers-reduced-motion</span> 시 모션 최소화.</div>
+    </div>
+  </section>
+
+  <!-- 11 HANDOFF -->
+  <section class="sec" id="handoff">
+    <div class="sec-h"><span class="sec-n">11</span><h2>개발 핸드오프 노트</h2></div>
+    <div class="grid g2">
+      <div class="panel"><div class="label">반영 원칙</div>
+        <ul class="clean" style="margin-top:8px">
+          <li>토큰(컬러·radius·shadow)은 CSS 변수로 그대로 사용 — 위 <span class="spec">:root</span> 참고</li>
+          <li>마스코트는 <span class="spec">mascot.css</span> + state 클래스(<span class="spec">sai--listening</span> 등)로 제어</li>
+          <li>추천 카드는 <b>이유 우선</b> 슬롯 순서 고정 · 라벨/이유 텍스트는 AI JSON에서</li>
+          <li>상황 세그먼트는 5종, 색상은 상황 액센트 토큰</li>
+        </ul></div>
+      <div class="panel"><div class="label">데이터 → UI 매핑</div>
+        <ul class="clean" style="margin-top:8px">
+          <li><span class="spec">situation</span> → 상황 세그먼트 · 카드 카피 단/복수</li>
+          <li><span class="spec">availableTime</span> → 단일/미니코스/시간표형 결과 형태</li>
+          <li><span class="spec">weatherFit</span> → 실내/실외 배지 · 폴백 분기</li>
+          <li><span class="spec">companionConstraints.hasBaby</span> → 인프라 배지 + 우선 필터</li>
+          <li><span class="spec">feedback.sentiment/reasons</span> → 좋아요·별로 바 + 이유 칩</li>
+        </ul></div>
+    </div>
+    <div class="panel" style="margin-top:18px;display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+      <div data-mascot="happy" data-size="70"></div>
+      <div class="note" style="font-size:15px;color:var(--ink2)"><b>참고 프로토타입</b> — 음성·마스코트·투표 인터랙션은 <b>“사이 프로토타입.html”</b>에서 동작 확인 가능. 본 가이드의 컴포넌트·토큰과 동일 시스템입니다.</div>
+    </div>
+  </section>
+
+  <footer class="foot">사이 (SAI) · Design Guide v0.2 · 만든이: 디자인 · 시간과 돈 사이에서, 가장 괜찮은 선택지를 ✦</footer>
+</div>
+
+<script src="guide.js"></script>
+</body>
+</html>
