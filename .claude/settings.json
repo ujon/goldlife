@@ -1,0 +1,55 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Update(*)",
+      "WebSearch(*)",
+      "Bash(npm run:*)",
+      "Skill(claude-api)",
+      "WebFetch(*)",
+      "Skill(commit-message)",
+      "Skill(svelte-code-writer)"
+    ],
+    "deny": [
+      "Bash(terraform plan)",
+      "Bash(terraform apply)"
+    ]
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"Claude needs your attention\" with title \"Claude Code\" sound name \"Submarine\"'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"Turn finished\" with title \"Claude Code\" sound name \"Glass\"'"
+          }
+        ]
+      }
+    ]
+  },
+  "preferredNotifChannel": "notifications_disabled",
+  "teammateMode": "tmux",
+  "tmuxSplitPanes": true
+}
