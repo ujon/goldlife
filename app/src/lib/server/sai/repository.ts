@@ -34,6 +34,7 @@ type ProfileRow = {
 	spending_style: string;
 	risk_tolerance: string;
 	mobility_preference: string;
+	mbti_type: UserProfile['mbtiType'] | null;
 	recent_location: UserProfile['recentLocation'] | null;
 	updated_at: Date;
 };
@@ -102,11 +103,11 @@ export async function signup(emailInput: string, password: string): Promise<Auth
 
 	await sql.begin(async (tx) => {
 		await tx`
-			insert into users (id, email, password_hash)
+			insert into sai.users (id, email, password_hash)
 			values (${id}, ${email}, ${passwordHash})
 		`;
 		await tx`
-			insert into user_profiles (user_id)
+			insert into sai.user_profiles (user_id)
 			values (${id})
 		`;
 	});
@@ -121,7 +122,7 @@ export async function login(emailInput: string, password: string): Promise<AuthR
 	const sql = getSql();
 	const email = normalizeEmail(emailInput);
 	const rows = await sql<UserRow[]>`
-		select * from users where email = ${email}
+		select * from sai.users where email = ${email}
 	`;
 	const user = rows[0];
 	if (!user) return null;
@@ -137,7 +138,7 @@ export async function upsertProfile(profile: UserProfile) {
 	const sql = getSql();
 
 	await sql`
-		insert into user_profiles (
+		insert into sai.user_profiles (
 			user_id,
 			onboarding_completed,
 			activity_preferences,
@@ -145,6 +146,7 @@ export async function upsertProfile(profile: UserProfile) {
 			spending_style,
 			risk_tolerance,
 			mobility_preference,
+			mbti_type,
 			recent_location,
 			updated_at
 		)
@@ -156,6 +158,7 @@ export async function upsertProfile(profile: UserProfile) {
 			${profile.spendingStyle},
 			${profile.riskTolerance},
 			${profile.mobilityPreference},
+			${profile.mbtiType ?? ''},
 			${profile.recentLocation ? sql.json(profile.recentLocation) : null},
 			now()
 		)
@@ -166,6 +169,7 @@ export async function upsertProfile(profile: UserProfile) {
 			spending_style = excluded.spending_style,
 			risk_tolerance = excluded.risk_tolerance,
 			mobility_preference = excluded.mobility_preference,
+			mbti_type = excluded.mbti_type,
 			recent_location = excluded.recent_location,
 			updated_at = now()
 	`;
@@ -181,7 +185,7 @@ export async function saveRecommendationHistory(
 
 	await sql.begin(async (tx) => {
 		await tx`
-			insert into recommendation_sessions (
+			insert into sai.recommendation_sessions (
 				id,
 				user_id,
 				situation,
@@ -220,7 +224,7 @@ export async function saveRecommendationHistory(
 
 		for (const card of cards) {
 			await tx`
-				insert into recommendation_cards (
+				insert into sai.recommendation_cards (
 					id,
 					session_id,
 					label,
@@ -275,7 +279,7 @@ export async function saveFeedback(userId: string, sessionId: string, feedback: 
 	await sql.begin(async (tx) => {
 		if (cardIds.length) {
 			await tx`
-				delete from recommendation_feedback
+				delete from sai.recommendation_feedback
 				where user_id = ${userId}
 				and card_id in ${tx(cardIds)}
 			`;
@@ -283,7 +287,7 @@ export async function saveFeedback(userId: string, sessionId: string, feedback: 
 
 		for (const item of feedback) {
 			await tx`
-				insert into recommendation_feedback (card_id, user_id, sentiment, reasons, created_at)
+				insert into sai.recommendation_feedback (card_id, user_id, sentiment, reasons, created_at)
 				values (
 					${item.cardId},
 					${userId},
@@ -306,7 +310,7 @@ export async function saveCardClick(userId: string, cardId: string) {
 	await ensureSchema();
 	const sql = getSql();
 	await sql`
-		insert into recommendation_card_clicks (card_id, user_id)
+		insert into sai.recommendation_card_clicks (card_id, user_id)
 		values (${cardId}, ${userId})
 		on conflict (card_id, user_id) do nothing
 	`;
@@ -316,13 +320,13 @@ export async function getAuthResult(userId: string): Promise<AuthResult | null> 
 	await ensureSchema();
 	const sql = getSql();
 	const users = await sql<UserRow[]>`
-		select * from users where id = ${userId}
+		select * from sai.users where id = ${userId}
 	`;
 	const user = users[0];
 	if (!user) return null;
 
 	const profiles = await sql<ProfileRow[]>`
-		select * from user_profiles where user_id = ${userId}
+		select * from sai.user_profiles where user_id = ${userId}
 	`;
 	const profile = profiles[0] ? mapProfile(user, profiles[0]) : createProfile(user);
 	const histories = await getHistories(userId);
@@ -348,7 +352,7 @@ async function getHistories(userId: string): Promise<RecommendationHistoryItem[]
 	const sql = getSql();
 	const sessions = await sql<SessionRow[]>`
 		select *
-		from recommendation_sessions
+		from sai.recommendation_sessions
 		where user_id = ${userId}
 		order by created_at desc
 		limit 12
@@ -360,22 +364,22 @@ async function getHistories(userId: string): Promise<RecommendationHistoryItem[]
 		const [cards, feedback, clicks] = await Promise.all([
 			sql<CardRow[]>`
 				select *
-				from recommendation_cards
+				from sai.recommendation_cards
 				where session_id = ${sessionRow.id}
 				order by created_at asc
 			`,
 			sql<FeedbackRow[]>`
 				select rf.*
-				from recommendation_feedback rf
-				join recommendation_cards rc on rc.id = rf.card_id
+				from sai.recommendation_feedback rf
+				join sai.recommendation_cards rc on rc.id = rf.card_id
 				where rf.user_id = ${userId}
 				and rc.session_id = ${sessionRow.id}
 				order by rf.created_at asc
 			`,
 			sql<ClickRow[]>`
 				select rcc.card_id
-				from recommendation_card_clicks rcc
-				join recommendation_cards rc on rc.id = rcc.card_id
+				from sai.recommendation_card_clicks rcc
+				join sai.recommendation_cards rc on rc.id = rcc.card_id
 				where rcc.user_id = ${userId}
 				and rc.session_id = ${sessionRow.id}
 			`
@@ -403,6 +407,7 @@ function createProfile(user: UserRow): UserProfile {
 		spendingStyle: '',
 		riskTolerance: '',
 		mobilityPreference: '',
+		mbtiType: '',
 		updatedAt: user.updated_at.toISOString()
 	};
 }
@@ -417,6 +422,7 @@ function mapProfile(user: UserRow, row: ProfileRow): UserProfile {
 		spendingStyle: row.spending_style,
 		riskTolerance: row.risk_tolerance,
 		mobilityPreference: row.mobility_preference,
+		mbtiType: row.mbti_type ?? '',
 		recentLocation: row.recent_location ?? undefined,
 		updatedAt: row.updated_at.toISOString()
 	};

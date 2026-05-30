@@ -14,6 +14,26 @@ export type Screen =
 
 export type Situation = 'solo' | 'friend' | 'couple' | 'family' | 'group';
 
+export type MbtiType =
+	| ''
+	| 'ISTJ'
+	| 'ISFJ'
+	| 'INFJ'
+	| 'INTJ'
+	| 'ISTP'
+	| 'ISFP'
+	| 'INFP'
+	| 'INTP'
+	| 'ESTP'
+	| 'ESFP'
+	| 'ENFP'
+	| 'ENTP'
+	| 'ESTJ'
+	| 'ESFJ'
+	| 'ENFJ'
+	| 'ENTJ'
+	| 'unknown';
+
 export type LocationValue = {
 	mode: 'geo' | 'manual' | 'default';
 	label: string;
@@ -47,6 +67,7 @@ export type UserProfile = {
 	spendingStyle: string;
 	riskTolerance: string;
 	mobilityPreference: string;
+	mbtiType: MbtiType;
 	recentLocation?: LocationValue;
 	updatedAt: string;
 };

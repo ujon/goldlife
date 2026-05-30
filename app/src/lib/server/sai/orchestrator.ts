@@ -8,6 +8,7 @@ import type {
 	UserProfile
 } from '$lib/sai/types';
 import { collectCandidates } from './candidates';
+import { loggedFetch } from './integration-logger';
 
 export type ComposeResult = {
 	cards: RecommendationCard[];
@@ -92,58 +93,65 @@ async function requestOpenAICards(input: {
 	sessionId: string;
 	fallbackCards: RecommendationCard[];
 }) {
-	const response = await fetch('https://api.openai.com/v1/responses', {
-		method: 'POST',
-		headers: {
-			authorization: `Bearer ${env.OPENAI_API_KEY}`,
-			'content-type': 'application/json'
-		},
-		body: JSON.stringify({
-			model: input.model,
-			input: [
-				{
-					role: 'system',
-					content: [
-						{
-							type: 'input_text',
-							text: [
-								'너는 사이(SAI)의 추천 오케스트레이터다.',
-								'사용자의 시간, 총 예산, 위치, 날씨, 동행 상황, 온보딩 프로필, 후보 API 결과를 종합해 실행 가능한 추천 카드 3개를 만든다.',
-								'시간과 예산은 다시 묻지 않는다.',
-								'아기 동반이면 부모 취향보다 아기 안전, 유모차/수유실/기저귀 교체/주차, 짧은 동선을 먼저 본다.',
-								'카드의 첫 문장은 왜 이 추천이 맞는지여야 한다.',
-								'모든 가격은 원화 숫자이며 총 예산 기준으로 맞춘다.',
-								'outboundUrl은 후보에 있는 URL만 사용하고 없으면 https://map.kakao.com 을 사용한다.'
-							].join('\n')
-						}
-					]
-				},
-				{
-					role: 'user',
-					content: [
-						{
-							type: 'input_text',
-							text: JSON.stringify({
-								profile: input.profile,
-								session: input.session,
-								candidates: input.candidates,
-								histories: summarizeHistories(input.histories),
-								referenceCards: input.fallbackCards
-							})
-						}
-					]
+	const response = await loggedFetch({
+		provider: 'openai',
+		kind: 'ai',
+		operation: 'recommendations.compose',
+		url: 'https://api.openai.com/v1/responses',
+		init: {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${env.OPENAI_API_KEY}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				model: input.model,
+				input: [
+					{
+						role: 'system',
+						content: [
+							{
+								type: 'input_text',
+								text: [
+									'너는 사이(SAI)의 추천 오케스트레이터다.',
+									'사용자의 시간, 총 예산, 위치, 날씨, 동행 상황, 온보딩 프로필, 후보 API 결과를 종합해 실행 가능한 추천 카드 3개를 만든다.',
+									'시간과 예산은 다시 묻지 않는다.',
+									'MBTI는 추천 톤과 활동 성향 보정에만 사용하고 시간, 예산, 안전 조건보다 우선하지 않는다.',
+									'아기 동반이면 부모 취향보다 아기 안전, 유모차/수유실/기저귀 교체/주차, 짧은 동선을 먼저 본다.',
+									'카드의 첫 문장은 왜 이 추천이 맞는지여야 한다.',
+									'모든 가격은 원화 숫자이며 총 예산 기준으로 맞춘다.',
+									'outboundUrl은 후보에 있는 URL만 사용하고 없으면 https://map.kakao.com 을 사용한다.'
+								].join('\n')
+							}
+						]
+					},
+					{
+						role: 'user',
+						content: [
+							{
+								type: 'input_text',
+								text: JSON.stringify({
+									profile: input.profile,
+									session: input.session,
+									candidates: input.candidates,
+									histories: summarizeHistories(input.histories),
+									referenceCards: input.fallbackCards
+								})
+							}
+						]
+					}
+				],
+				text: {
+					format: {
+						type: 'json_schema',
+						name: 'sai_recommendations',
+						strict: true,
+						schema: recommendationSchema()
+					}
 				}
-			],
-			text: {
-				format: {
-					type: 'json_schema',
-					name: 'sai_recommendations',
-					strict: true,
-					schema: recommendationSchema()
-				}
-			}
-		}),
-		signal: AbortSignal.timeout(12000)
+			}),
+			signal: AbortSignal.timeout(12000)
+		}
 	});
 
 	if (!response.ok) {

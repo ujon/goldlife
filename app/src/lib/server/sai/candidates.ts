@@ -8,6 +8,7 @@ import type {
 	WeatherCandidate
 } from '$lib/sai/candidates';
 import type { RecommendationSession, UserProfile } from '$lib/sai/types';
+import { loggedFetch } from './integration-logger';
 
 type CandidateInput = {
 	profile: UserProfile;
@@ -47,7 +48,13 @@ async function getTrendKeywords(statuses: ProviderStatus[]) {
 		url.searchParams.set('language', 'ko');
 		url.searchParams.set('limit', '8');
 
-		const response = await fetch(url, { signal: AbortSignal.timeout(2500) });
+		const response = await loggedFetch({
+			provider: 'genrank',
+			kind: 'api',
+			operation: 'rankings',
+			url,
+			init: { signal: AbortSignal.timeout(2500) }
+		});
 		if (!response.ok) throw new Error(`GenRank ${response.status}`);
 
 		const payload = (await response.json()) as {
@@ -93,21 +100,27 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 			: input.profile.activityPreferences.includes('culture')
 				? '전시'
 				: '원데이클래스';
-		const response = await fetch(`${MYREALTRIP_BASE}/v1/products/tna/search`, {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${apiKey}`,
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				keyword,
-				minPrice: 0,
-				maxPrice: input.session.budgetTotal ?? 100000,
-				sort: 'review',
-				page: 1,
-				size: 8
-			}),
-			signal: AbortSignal.timeout(3500)
+		const response = await loggedFetch({
+			provider: 'myrealtrip',
+			kind: 'api',
+			operation: 'tna.search',
+			url: `${MYREALTRIP_BASE}/v1/products/tna/search`,
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${apiKey}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					keyword,
+					minPrice: 0,
+					maxPrice: input.session.budgetTotal ?? 100000,
+					sort: 'review',
+					page: 1,
+					size: 8
+				}),
+				signal: AbortSignal.timeout(3500)
+			}
 		});
 		if (!response.ok) throw new Error(`Myrealtrip ${response.status}`);
 
@@ -163,23 +176,29 @@ async function getRestaurants(input: CandidateInput, statuses: ProviderStatus[])
 	}
 
 	try {
-		const response = await fetch(`${APIFUSE_BASE}/v1/catchtable/search`, {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${apiKey}`,
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				keyword: input.session.companionConstraints.hasBaby
-					? '키즈 프렌들리 카페'
-					: '캐주얼 다이닝',
-				lat: input.session.location?.lat,
-				lon: input.session.location?.lng,
-				limit: 8,
-				offset: 0,
-				sort: 'review'
-			}),
-			signal: AbortSignal.timeout(3500)
+		const response = await loggedFetch({
+			provider: 'api_fuse',
+			kind: 'api',
+			operation: 'catchtable.search',
+			url: `${APIFUSE_BASE}/v1/catchtable/search`,
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${apiKey}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					keyword: input.session.companionConstraints.hasBaby
+						? '키즈 프렌들리 카페'
+						: '캐주얼 다이닝',
+					lat: input.session.location?.lat,
+					lon: input.session.location?.lng,
+					limit: 8,
+					offset: 0,
+					sort: 'review'
+				}),
+				signal: AbortSignal.timeout(3500)
+			}
 		});
 		if (!response.ok) throw new Error(`API Fuse CatchTable ${response.status}`);
 
@@ -223,16 +242,22 @@ async function getWeather(input: CandidateInput): Promise<WeatherCandidate> {
 	if (!apiKey) return fallback;
 
 	try {
-		const response = await fetch(`${APIFUSE_BASE}/v1/kma-forecast/weather-by-address`, {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${apiKey}`,
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				address: input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울'
-			}),
-			signal: AbortSignal.timeout(3500)
+		const response = await loggedFetch({
+			provider: 'api_fuse',
+			kind: 'api',
+			operation: 'kma.weather_by_address',
+			url: `${APIFUSE_BASE}/v1/kma-forecast/weather-by-address`,
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${apiKey}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					address: input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울'
+				}),
+				signal: AbortSignal.timeout(3500)
+			}
 		});
 		if (!response.ok) throw new Error(`API Fuse KMA ${response.status}`);
 
@@ -280,9 +305,15 @@ async function getMobility(
 		url.searchParams.set('lng', String(input.session.location.lng));
 		url.searchParams.set('radius', '1200');
 		url.searchParams.set('count', '5');
-		const response = await fetch(url, {
-			headers: { 'x-api-key': apiKey },
-			signal: AbortSignal.timeout(2500)
+		const response = await loggedFetch({
+			provider: 'swing',
+			kind: 'api',
+			operation: 'vehicles.search',
+			url,
+			init: {
+				headers: { 'x-api-key': apiKey },
+				signal: AbortSignal.timeout(2500)
+			}
 		});
 		if (!response.ok) throw new Error(`Swing ${response.status}`);
 

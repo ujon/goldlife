@@ -6,6 +6,7 @@ import type {
 	RecommendationSession,
 	UserProfile
 } from '$lib/sai/types';
+import { loggedFetch } from './integration-logger';
 
 export type FollowupResult = {
 	questions: FollowupQuestion[];
@@ -57,34 +58,40 @@ async function tryExaoneFollowups(
 	const model = env.EXAONE_MODEL || 'LGAI-EXAONE/K-EXAONE-236B-A23B';
 
 	try {
-		const response = await fetch(`${env.EXAONE_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${env.EXAONE_API_KEY}`,
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				model,
-				messages: [
-					{
-						role: 'system',
-						content:
-							'사이(SAI)의 귀여운 한국어 코치다. 추천 전 추가 질문 1-2개만 JSON으로 만든다. 시간, 예산, 이미 받은 동행 제약은 다시 묻지 않는다.'
-					},
-					{
-						role: 'user',
-						content: JSON.stringify({
-							profile,
-							session,
-							histories: summarizeHistories(histories),
-							fallback
-						})
-					}
-				],
-				response_format: { type: 'json_object' },
-				max_tokens: 700
-			}),
-			signal: AbortSignal.timeout(8000)
+		const response = await loggedFetch({
+			provider: 'exaone',
+			kind: 'ai',
+			operation: 'followups.generate',
+			url: `${env.EXAONE_BASE_URL.replace(/\/$/, '')}/chat/completions`,
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${env.EXAONE_API_KEY}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					model,
+					messages: [
+						{
+							role: 'system',
+							content:
+								'사이(SAI)의 귀여운 한국어 코치다. 추천 전 추가 질문 1-2개만 JSON으로 만든다. 시간, 예산, MBTI, 이미 받은 동행 제약은 다시 묻지 않는다.'
+						},
+						{
+							role: 'user',
+							content: JSON.stringify({
+								profile,
+								session,
+								histories: summarizeHistories(histories),
+								fallback
+							})
+						}
+					],
+					response_format: { type: 'json_object' },
+					max_tokens: 700
+				}),
+				signal: AbortSignal.timeout(8000)
+			}
 		});
 		if (!response.ok) throw new Error(`EXAONE ${response.status}`);
 
@@ -112,55 +119,61 @@ async function tryOpenAIFollowups(
 	const model = env.OPENAI_MODEL || 'gpt-5.4-mini';
 
 	try {
-		const response = await fetch('https://api.openai.com/v1/responses', {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${env.OPENAI_API_KEY}`,
-				'content-type': 'application/json'
-			},
-			body: JSON.stringify({
-				model,
-				input: [
-					{
-						role: 'system',
-						content: [
-							{
-								type: 'input_text',
-								text: [
-									'사이(SAI)의 추천 전 동적 추가 질문 생성기다.',
-									'질문은 1-2개만 만든다.',
-									'시간과 총 예산은 이미 받았으므로 절대 다시 묻지 않는다.',
-									'상황, 아기 동반 여부, 핵심 아기 편의도 이미 받았으므로 다시 묻지 말고 세부 조건만 보강한다.',
-									'짧고 친근한 반말 톤을 사용한다.'
-								].join('\n')
-							}
-						]
-					},
-					{
-						role: 'user',
-						content: [
-							{
-								type: 'input_text',
-								text: JSON.stringify({
-									profile,
-									session,
-									histories: summarizeHistories(histories),
-									fallback
-								})
-							}
-						]
+		const response = await loggedFetch({
+			provider: 'openai',
+			kind: 'ai',
+			operation: 'followups.generate',
+			url: 'https://api.openai.com/v1/responses',
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${env.OPENAI_API_KEY}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify({
+					model,
+					input: [
+						{
+							role: 'system',
+							content: [
+								{
+									type: 'input_text',
+									text: [
+										'사이(SAI)의 추천 전 동적 추가 질문 생성기다.',
+										'질문은 1-2개만 만든다.',
+										'시간과 총 예산, MBTI는 이미 받았으므로 절대 다시 묻지 않는다.',
+										'상황, 아기 동반 여부, 핵심 아기 편의도 이미 받았으므로 다시 묻지 말고 세부 조건만 보강한다.',
+										'짧고 친근한 반말 톤을 사용한다.'
+									].join('\n')
+								}
+							]
+						},
+						{
+							role: 'user',
+							content: [
+								{
+									type: 'input_text',
+									text: JSON.stringify({
+										profile,
+										session,
+										histories: summarizeHistories(histories),
+										fallback
+									})
+								}
+							]
+						}
+					],
+					text: {
+						format: {
+							type: 'json_schema',
+							name: 'sai_followups',
+							strict: true,
+							schema: followupSchema()
+						}
 					}
-				],
-				text: {
-					format: {
-						type: 'json_schema',
-						name: 'sai_followups',
-						strict: true,
-						schema: followupSchema()
-					}
-				}
-			}),
-			signal: AbortSignal.timeout(8000)
+				}),
+				signal: AbortSignal.timeout(8000)
+			}
 		});
 		if (!response.ok) throw new Error(`OpenAI ${response.status}`);
 

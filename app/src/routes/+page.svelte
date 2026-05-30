@@ -18,17 +18,6 @@
 		timeMeta,
 		timeOptions
 	} from '$lib/sai/recommendations';
-	import {
-		createDefaultProfile,
-		emptyStoredState,
-		hashPassword,
-		loadStoredState,
-		normalizeEmail,
-		saveStoredState,
-		type StoredState,
-		type StoredUser,
-		userIdFromEmail
-	} from '$lib/sai/storage';
 	import type {
 		AuthMode,
 		FeedbackRecord,
@@ -48,10 +37,12 @@
 			| 'noveltyPreference'
 			| 'spendingStyle'
 			| 'riskTolerance'
-			| 'mobilityPreference';
+			| 'mobilityPreference'
+			| 'mbtiType';
 		prompt: string;
 		options: Array<{ id: string; label: string; value: string }>;
 		multi?: boolean;
+		compact?: boolean;
 		reaction: string;
 	};
 
@@ -92,13 +83,30 @@
 	};
 	type ServerResult<T> =
 		| { type: 'ok'; data: T }
-		| { type: 'skip' }
 		| { type: 'error'; status: number; message: string };
 
 	const defaultLocation: LocationValue = {
 		mode: 'default',
 		label: '서울 성수동'
 	};
+	const mbtiOptions = [
+		'ISTJ',
+		'ISFJ',
+		'INFJ',
+		'INTJ',
+		'ISTP',
+		'ISFP',
+		'INFP',
+		'INTP',
+		'ESTP',
+		'ESFP',
+		'ENFP',
+		'ENTP',
+		'ESTJ',
+		'ESFJ',
+		'ENFJ',
+		'ENTJ'
+	].map((type) => ({ id: type.toLowerCase(), label: type, value: type }));
 
 	const onboardingQuestions: OnboardingQuestion[] = [
 		{
@@ -153,10 +161,16 @@
 				{ id: 'transit', label: '대중교통 가능', value: 'public_transport_ok' },
 				{ id: 'far', label: '멀어도 됨', value: 'far_ok' }
 			]
+		},
+		{
+			id: 'mbtiType',
+			prompt: 'MBTI 알려줄래?',
+			reaction: '모르면 괜찮아. 성격 힌트는 추천 톤만 살짝 맞추는 데 쓸게.',
+			compact: true,
+			options: [...mbtiOptions, { id: 'unknown', label: '잘 모르겠어', value: 'unknown' }]
 		}
 	];
 
-	let stored = $state<StoredState>(browser ? loadStoredState() : emptyStoredState());
 	let screen = $state<Screen>('auth');
 	let authMode = $state<AuthMode>('login');
 	let authEmail = $state('');
@@ -164,6 +178,7 @@
 	let authError = $state('');
 	let currentUserId = $state('');
 	let profile = $state<UserProfile | null>(null);
+	let histories = $state<RecommendationHistoryItem[]>([]);
 	let busy = $state(false);
 	let manualRegion = $state(defaultLocation.label);
 	let onboardingIndex = $state(0);
@@ -185,7 +200,6 @@
 	let listeningFor = $state<SpeechTarget | null>(null);
 	let speechTranscript = $state('');
 	let speechMessage = $state('');
-	let serverBacked = $state(false);
 
 	let currentOnboardingQuestion = $derived(onboardingQuestions[onboardingIndex]);
 	let onboardingAnswered = $derived(
@@ -204,9 +218,7 @@
 		dynamicFollowups.length ? dynamicFollowups : fallbackFollowupQuestions
 	);
 	let currentFollowup = $derived(followupQuestions[followupIndex]);
-	let recentHistory = $derived(
-		currentUserId ? (stored.histories[currentUserId] ?? []).slice(0, 3) : []
-	);
+	let recentHistory = $derived(currentUserId ? histories.slice(0, 3) : []);
 	let mascotState = $derived(
 		screen === 'generating' ? 'thinking' : screen === 'results' ? 'happy' : 'idle'
 	);
@@ -233,8 +245,8 @@
 		return JSON.parse(JSON.stringify(value)) as T;
 	}
 
-	function persist(nextState: StoredState = stored) {
-		saveStoredState(nextState);
+	function normalizeEmail(email: string) {
+		return email.trim().toLowerCase();
 	}
 
 	async function serverJson<T>(
@@ -250,20 +262,28 @@
 				}
 			});
 
-			if (response.status === 503) return { type: 'skip' };
-
 			const payload = (await response.json().catch(() => ({}))) as { error?: string };
 			if (!response.ok) {
 				return {
 					type: 'error',
 					status: response.status,
-					message: payload.error ?? '서버 저장에 실패했어.'
+					message:
+						response.status === 503
+							? 'PostgreSQL 연결이 필요해. 루트에서 make server-dev로 실행해줘.'
+							: (payload.error ?? '서버 요청에 실패했어.')
 				};
 			}
 
 			return { type: 'ok', data: payload as T };
-		} catch {
-			return { type: 'skip' };
+		} catch (error) {
+			return {
+				type: 'error',
+				status: 0,
+				message:
+					error instanceof Error
+						? `서버에 연결할 수 없어: ${error.message}`
+						: '서버에 연결할 수 없어.'
+			};
 		}
 	}
 
@@ -275,81 +295,47 @@
 	}
 
 	async function syncServerProfile(nextProfile: UserProfile) {
-		if (!serverBacked) return;
-		const result = await serverJson<{ saved: boolean }>('/api/profile', {
+		return serverJson<{ saved: boolean }>('/api/profile', {
 			method: 'PUT',
 			body: JSON.stringify({ profile: nextProfile })
 		});
-		if (result.type === 'skip') serverBacked = false;
 	}
 
 	async function syncServerHistory(
 		nextSession: RecommendationSession,
 		cards: RecommendationCard[]
 	) {
-		if (!serverBacked || !currentUserId) return;
-		const result = await serverJson<{ saved: boolean }>('/api/recommendation/history', {
+		if (!currentUserId) return;
+		return serverJson<{ saved: boolean }>('/api/recommendation/history', {
 			method: 'POST',
 			body: JSON.stringify({ userId: currentUserId, session: nextSession, cards })
 		});
-		if (result.type === 'skip') serverBacked = false;
 	}
 
 	async function syncServerFeedback(sessionId: string, feedback: FeedbackRecord[]) {
-		if (!serverBacked || !currentUserId) return;
-		const result = await serverJson<{ saved: boolean }>('/api/recommendation/feedback', {
+		if (!currentUserId) return;
+		return serverJson<{ saved: boolean }>('/api/recommendation/feedback', {
 			method: 'POST',
 			body: JSON.stringify({ userId: currentUserId, sessionId, feedback })
 		});
-		if (result.type === 'skip') serverBacked = false;
 	}
 
 	async function syncServerClick(cardId: string) {
-		if (!serverBacked || !currentUserId) return;
-		const result = await serverJson<{ saved: boolean }>('/api/recommendation/click', {
+		if (!currentUserId) return;
+		return serverJson<{ saved: boolean }>('/api/recommendation/click', {
 			method: 'POST',
 			body: JSON.stringify({ userId: currentUserId, cardId })
 		});
-		if (result.type === 'skip') serverBacked = false;
 	}
 
-	function hydrateServerState(result: ServerAuthResult, passwordHash: string) {
-		const user: StoredUser = {
-			id: result.user.id,
-			email: result.user.email,
-			passwordHash,
-			createdAt: result.user.createdAt,
-			updatedAt: result.user.updatedAt
-		};
-		const otherUsers = stored.users.filter((storedUser) => storedUser.id !== user.id);
-		const nextState = {
-			users: [...otherUsers, user],
-			profiles: {
-				...stored.profiles,
-				[user.id]: result.profile
-			},
-			histories: {
-				...stored.histories,
-				[user.id]: result.histories
-			}
-		};
-
-		stored = nextState;
-		persist(nextState);
-		enterUser(user.id, result.profile);
+	function applyServerAuthResult(result: ServerAuthResult) {
+		histories = result.histories;
+		enterUser(result.user.id, result.profile);
 	}
 
 	function saveProfile(nextProfile: UserProfile | null = profile) {
 		if (!nextProfile) return;
-		const nextState = {
-			...stored,
-			profiles: {
-				...stored.profiles,
-				[nextProfile.userId]: nextProfile
-			}
-		};
-		stored = nextState;
-		persist(nextState);
+		profile = nextProfile;
 		void syncServerProfile(nextProfile);
 	}
 
@@ -364,77 +350,21 @@
 		}
 
 		busy = true;
-		const userId = userIdFromEmail(email);
-		const passwordHash = await hashPassword(authPassword, userId);
 		const serverAuth = await authenticateWithServer(authMode, email, authPassword);
 
 		if (serverAuth.type === 'ok') {
-			serverBacked = true;
-			hydrateServerState(serverAuth.data, passwordHash);
+			applyServerAuthResult(serverAuth.data);
 			authPassword = '';
 			busy = false;
 			return;
 		}
 
-		if (serverAuth.type === 'error') {
-			authError =
-				serverAuth.status === 409
-					? '이미 가입된 이메일이야. 로그인으로 들어와줘.'
-					: serverAuth.status === 401
-						? '이메일이나 비밀번호가 맞지 않아.'
-						: serverAuth.message;
-			busy = false;
-			return;
-		}
-
-		serverBacked = false;
-		const existingUser = stored.users.find((user) => user.email === email);
-
-		if (authMode === 'signup') {
-			if (existingUser) {
-				authError = '이미 가입된 이메일이야. 로그인으로 들어와줘.';
-				busy = false;
-				return;
-			}
-
-			const now = new Date().toISOString();
-			const user: StoredUser = {
-				id: userId,
-				email,
-				passwordHash,
-				createdAt: now,
-				updatedAt: now
-			};
-			const nextProfile = createDefaultProfile(userId, email);
-			const nextState = {
-				users: [...stored.users, user],
-				profiles: {
-					...stored.profiles,
-					[userId]: nextProfile
-				},
-				histories: {
-					...stored.histories,
-					[userId]: []
-				}
-			};
-
-			stored = nextState;
-			persist(nextState);
-			enterUser(userId, nextProfile);
-		} else {
-			if (!existingUser || existingUser.passwordHash !== passwordHash) {
-				authError = '이메일이나 비밀번호가 맞지 않아.';
-				busy = false;
-				return;
-			}
-
-			const nextProfile =
-				stored.profiles[existingUser.id] ?? createDefaultProfile(existingUser.id, email);
-			enterUser(existingUser.id, nextProfile);
-			saveProfile(nextProfile);
-		}
-
-		authPassword = '';
+		authError =
+			serverAuth.status === 409
+				? '이미 가입된 이메일이야. 로그인으로 들어와줘.'
+				: serverAuth.status === 401
+					? '이메일이나 비밀번호가 맞지 않아.'
+					: serverAuth.message;
 		busy = false;
 	}
 
@@ -443,9 +373,11 @@
 		profile = nextProfile;
 		manualRegion = nextProfile.recentLocation?.label ?? defaultLocation.label;
 		session = createRecommendationSession(nextProfile.recentLocation ?? defaultLocation);
+		const missingIndex = firstUnansweredOnboardingIndex(nextProfile);
+		onboardingIndex = missingIndex === -1 ? 0 : missingIndex;
 		screen = !nextProfile.recentLocation
 			? 'location'
-			: nextProfile.onboardingCompleted
+			: isProfileOnboardingComplete(nextProfile)
 				? 'home'
 				: 'onboarding';
 	}
@@ -460,7 +392,7 @@
 		candidateBundle = null;
 		compositionSource = 'fallback';
 		activeSessionId = '';
-		serverBacked = false;
+		histories = [];
 	}
 
 	async function requestLocation() {
@@ -510,12 +442,26 @@
 		profile = nextProfile;
 		saveProfile(nextProfile);
 		session = createRecommendationSession(location);
-		screen = nextProfile.onboardingCompleted ? 'home' : 'onboarding';
+		const missingIndex = firstUnansweredOnboardingIndex(nextProfile);
+		onboardingIndex = missingIndex === -1 ? 0 : missingIndex;
+		screen = isProfileOnboardingComplete(nextProfile) ? 'home' : 'onboarding';
 	}
 
 	function isOnboardingAnswered(question: OnboardingQuestion, targetProfile: UserProfile) {
 		if (question.id === 'activityPreferences') return targetProfile.activityPreferences.length > 0;
 		return Boolean(targetProfile[question.id]);
+	}
+
+	function firstUnansweredOnboardingIndex(targetProfile: UserProfile) {
+		return onboardingQuestions.findIndex(
+			(question) => !isOnboardingAnswered(question, targetProfile)
+		);
+	}
+
+	function isProfileOnboardingComplete(targetProfile: UserProfile) {
+		return (
+			targetProfile.onboardingCompleted && firstUnansweredOnboardingIndex(targetProfile) === -1
+		);
 	}
 
 	function isOnboardingSelected(question: OnboardingQuestion, value: string) {
@@ -542,13 +488,32 @@
 			return;
 		}
 
-		const nextProfile = {
-			...profile,
-			[question.id]: value,
-			updatedAt: new Date().toISOString()
-		};
+		const nextProfile = setSingleOnboardingAnswer(profile, question.id, value);
 		profile = nextProfile;
 		saveProfile(nextProfile);
+	}
+
+	function setSingleOnboardingAnswer(
+		targetProfile: UserProfile,
+		id: Exclude<OnboardingQuestion['id'], 'activityPreferences'>,
+		value: string
+	): UserProfile {
+		const updatedAt = new Date().toISOString();
+
+		switch (id) {
+			case 'noveltyPreference':
+				return { ...targetProfile, noveltyPreference: value, updatedAt };
+			case 'spendingStyle':
+				return { ...targetProfile, spendingStyle: value, updatedAt };
+			case 'riskTolerance':
+				return { ...targetProfile, riskTolerance: value, updatedAt };
+			case 'mobilityPreference':
+				return { ...targetProfile, mobilityPreference: value, updatedAt };
+			case 'mbtiType':
+				return { ...targetProfile, mbtiType: value as UserProfile['mbtiType'], updatedAt };
+		}
+
+		return targetProfile;
 	}
 
 	function continueOnboarding() {
@@ -572,7 +537,9 @@
 
 	function startRecommendation() {
 		if (!profile) return;
-		if (!profile.onboardingCompleted) {
+		if (!isProfileOnboardingComplete(profile)) {
+			const missingIndex = firstUnansweredOnboardingIndex(profile);
+			onboardingIndex = missingIndex === -1 ? 0 : missingIndex;
 			screen = 'onboarding';
 			return;
 		}
@@ -683,7 +650,7 @@
 
 		const result = await serverJson<FollowupResult>('/api/recommendation/followups', {
 			method: 'POST',
-			body: JSON.stringify({ profile, session, histories: stored.histories[currentUserId] ?? [] })
+			body: JSON.stringify({ profile, session, histories })
 		});
 
 		if (result.type === 'ok') return result.data;
@@ -737,7 +704,7 @@
 			body: JSON.stringify({
 				profile: targetProfile,
 				session: targetSession,
-				histories: stored.histories[currentUserId] ?? []
+				histories
 			})
 		});
 		if (result.type === 'ok') return result.data;
@@ -844,16 +811,7 @@
 			clickedCardIds: [],
 			createdAt: new Date().toISOString()
 		};
-		const history = [historyItem, ...(stored.histories[currentUserId] ?? [])].slice(0, 12);
-		const nextState = {
-			...stored,
-			histories: {
-				...stored.histories,
-				[currentUserId]: history
-			}
-		};
-		stored = nextState;
-		persist(nextState);
+		histories = [historyItem, ...histories].slice(0, 12);
 		void syncServerHistory(historyItem.session, historyItem.cards);
 	}
 
@@ -910,39 +868,21 @@
 				reasons: value.reasons,
 				createdAt: new Date().toISOString()
 			}));
-		const history = (stored.histories[currentUserId] ?? []).map((item) =>
+		histories = histories.map((item) =>
 			item.session.id === activeSessionId ? { ...item, feedback } : item
 		);
-		const nextState = {
-			...stored,
-			histories: {
-				...stored.histories,
-				[currentUserId]: history
-			}
-		};
-		stored = nextState;
-		persist(nextState);
 		void syncServerFeedback(activeSessionId, feedback);
 	}
 
 	function recordClick(cardId: string) {
 		if (!currentUserId || !activeSessionId) return;
-		const history = (stored.histories[currentUserId] ?? []).map((item) => {
+		histories = histories.map((item) => {
 			if (item.session.id !== activeSessionId || item.clickedCardIds.includes(cardId)) return item;
 			return {
 				...item,
 				clickedCardIds: [...item.clickedCardIds, cardId]
 			};
 		});
-		const nextState = {
-			...stored,
-			histories: {
-				...stored.histories,
-				[currentUserId]: history
-			}
-		};
-		stored = nextState;
-		persist(nextState);
 		void syncServerClick(cardId);
 	}
 
@@ -951,7 +891,7 @@
 			screen = 'auth';
 			return;
 		}
-		screen = profile.onboardingCompleted ? 'home' : 'onboarding';
+		screen = isProfileOnboardingComplete(profile) ? 'home' : 'onboarding';
 	}
 
 	function parseBudget(value: string) {
@@ -1241,7 +1181,7 @@
 					</div>
 				</div>
 
-				<div class="choice-stack">
+				<div class={`choice-stack ${currentOnboardingQuestion.compact ? 'compact-grid' : ''}`}>
 					{#each currentOnboardingQuestion.options as option (option.id)}
 						<button
 							class={isOnboardingSelected(currentOnboardingQuestion, option.value) ? 'active' : ''}
@@ -2054,6 +1994,16 @@
 		border-color: var(--ink);
 	}
 
+	.choice-stack.compact-grid {
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+	}
+
+	.choice-stack.compact-grid button {
+		min-height: 42px;
+		padding: 0 6px;
+		text-align: center;
+	}
+
 	.chip-grid {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
@@ -2567,6 +2517,10 @@
 		.phone-shell {
 			padding-left: 14px;
 			padding-right: 14px;
+		}
+
+		.choice-stack.compact-grid {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
 		}
 
 		.home-hero {

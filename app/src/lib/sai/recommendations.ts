@@ -243,10 +243,58 @@ export function composeRecommendations(
 		answerValues.includes('shared_activity') || answerValues.includes('high_energy');
 	const wantsQuiet = answerValues.includes('quiet_reset') || answerValues.includes('talk_focused');
 
-	if (baby) {
-		return babyRecommendations(session, budget, people, location, resultType, wantsIndoor);
-	}
+	const cards = baby
+		? babyRecommendations(session, budget, people, location, resultType, wantsIndoor)
+		: baseRecommendations(
+				session,
+				budget,
+				people,
+				location,
+				resultType,
+				wantsActivity,
+				wantsQuiet,
+				wantsIndoor
+			);
 
+	return applyMbtiHints(cards, profile, baby);
+}
+
+function mbtiHint(profile: UserProfile, baby: boolean) {
+	const type = profile.mbtiType === 'unknown' ? null : profile.mbtiType;
+	if (!type) return null;
+
+	const tempo = type.includes('I') ? '소규모로 숨 쉴 틈 있는 흐름' : '대화와 함께하는 활동 여지';
+	const discovery = type.includes('N') ? '새로운 경험 포인트' : '실행하기 쉬운 동선과 정보 확실성';
+
+	return {
+		badge: `${type} 성향`,
+		reason: baby
+			? `아기 안전 조건을 먼저 두고, ${type} 성향은 ${tempo} 정도로만 살짝 반영했어.`
+			: `${type} 성향에 맞춰 ${tempo}를 두고 ${discovery}도 같이 봤어.`
+	};
+}
+
+function applyMbtiHints(cards: RecommendationCard[], profile: UserProfile, baby: boolean) {
+	const hint = mbtiHint(profile, baby);
+	if (!hint) return cards;
+
+	return cards.map((item) => ({
+		...item,
+		reason: `${item.reason} ${hint.reason}`,
+		badges: [...new Set([hint.badge, ...item.badges])].slice(0, 8)
+	}));
+}
+
+function baseRecommendations(
+	session: RecommendationSession,
+	budget: number,
+	people: number,
+	location: string,
+	resultType: RecommendationCard['resultType'],
+	wantsActivity: boolean,
+	wantsQuiet: boolean,
+	wantsIndoor: boolean
+) {
 	switch (session.situation) {
 		case 'friend':
 			return friendRecommendations(
