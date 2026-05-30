@@ -1,3 +1,4 @@
+import type { IntegrationLogEntry, IntegrationLogsResult } from '$lib/sai/types';
 import { DatabaseUnavailableError, ensureSchema, getSql } from './db';
 
 export type IntegrationKind = 'ai' | 'api';
@@ -33,9 +34,12 @@ type JsonPayload =
 	| { [key: string]: JsonPayload };
 
 const PAYLOAD_LIMIT = 12000;
+const MEMORY_LOG_LIMIT = 120;
 const REDACTED = '[REDACTED]';
 const SENSITIVE_KEY_PATTERN =
 	/(authorization|api[-_]?key|password|password_hash|passwordHash|secret|token|cookie|set-cookie|email)/i;
+let memoryLogSequence = 0;
+const memoryIntegrationLogs: IntegrationLogEntry[] = [];
 
 export async function loggedFetch(input: LoggedFetchInput) {
 	const startedAt = Date.now();
@@ -104,6 +108,8 @@ export async function logIntegrationEvent(event: IntegrationLogEvent) {
 		})
 	);
 
+	rememberIntegrationLog(safeEvent);
+
 	try {
 		await ensureSchema();
 		const sql = getSql();
@@ -141,6 +147,75 @@ export async function logIntegrationEvent(event: IntegrationLogEvent) {
 			'[sai.integration] failed to persist log',
 			error instanceof Error ? error.message : error
 		);
+	}
+}
+
+export async function listIntegrationLogs(options: {
+	limit?: number;
+	since?: string;
+	externalOnly?: boolean;
+}): Promise<IntegrationLogsResult> {
+	const limit = Math.min(Math.max(options.limit ?? 30, 1), 100);
+	const since = parseSince(options.since);
+
+	try {
+		await ensureSchema();
+		const sql = getSql();
+		const rows = options.externalOnly
+			? await sql<IntegrationLogRow[]>`
+				select
+					id,
+					provider,
+					kind,
+					operation,
+					method,
+					url,
+					status,
+					ok,
+					duration_ms,
+					error_message,
+					created_at
+				from sai.integration_logs
+				where provider <> 'internal'
+				${since ? sql`and created_at >= ${since}` : sql``}
+				order by created_at desc
+				limit ${limit}
+			`
+			: await sql<IntegrationLogRow[]>`
+				select
+					id,
+					provider,
+					kind,
+					operation,
+					method,
+					url,
+					status,
+					ok,
+					duration_ms,
+					error_message,
+					created_at
+				from sai.integration_logs
+				${since ? sql`where created_at >= ${since}` : sql``}
+				order by created_at desc
+				limit ${limit}
+			`;
+
+		return {
+			logs: rows.map(mapIntegrationLogRow),
+			source: 'database'
+		};
+	} catch (error) {
+		if (!(error instanceof DatabaseUnavailableError)) {
+			console.warn(
+				'[sai.integration] failed to read logs',
+				error instanceof Error ? error.message : error
+			);
+		}
+
+		return {
+			logs: filterMemoryLogs(options.externalOnly, since).slice(0, limit),
+			source: 'memory'
+		};
 	}
 }
 
@@ -200,6 +275,71 @@ function parseBody(body: BodyInit | null | undefined) {
 	if (body instanceof URLSearchParams) return Object.fromEntries(body.entries());
 	if (body instanceof FormData) return { formData: Object.fromEntries(body.entries()) };
 	return { bodyType: body.constructor.name };
+}
+
+type IntegrationLogRow = {
+	id: number;
+	provider: string;
+	kind: IntegrationKind;
+	operation: string;
+	method: string;
+	url: string;
+	status: number | null;
+	ok: boolean | null;
+	duration_ms: number;
+	error_message: string | null;
+	created_at: Date;
+};
+
+function rememberIntegrationLog(event: IntegrationLogEvent) {
+	memoryLogSequence += 1;
+	memoryIntegrationLogs.unshift({
+		id: `memory-${Date.now()}-${memoryLogSequence}`,
+		provider: event.provider,
+		kind: event.kind,
+		operation: event.operation,
+		method: event.method,
+		url: event.url,
+		status: event.status,
+		ok: event.ok,
+		durationMs: event.durationMs,
+		errorMessage: event.errorMessage,
+		createdAt: new Date().toISOString()
+	});
+
+	if (memoryIntegrationLogs.length > MEMORY_LOG_LIMIT) {
+		memoryIntegrationLogs.length = MEMORY_LOG_LIMIT;
+	}
+}
+
+function filterMemoryLogs(externalOnly = false, since: Date | null = null) {
+	return memoryIntegrationLogs.filter((log) => {
+		if (externalOnly && log.provider === 'internal') return false;
+		if (since && new Date(log.createdAt) < since) return false;
+		return true;
+	});
+}
+
+function parseSince(value: string | undefined) {
+	if (!value) return null;
+	const date = new Date(value);
+	return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function mapIntegrationLogRow(row: IntegrationLogRow): IntegrationLogEntry {
+	return {
+		id: String(row.id),
+		provider: row.provider,
+		kind: row.kind,
+		operation: row.operation,
+		method: row.method,
+		url: row.url,
+		status: row.status ?? undefined,
+		ok: row.ok ?? undefined,
+		durationMs: row.duration_ms,
+		errorMessage: row.error_message ?? undefined,
+		createdAt: row.created_at.toISOString()
+	};
 }
 
 function payloadFromText(text: string, contentType: string) {

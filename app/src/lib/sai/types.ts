@@ -64,6 +64,27 @@ export type LocationSuggestion = {
 	source: 'public_data' | 'fallback';
 };
 
+export type IntegrationLogKind = 'ai' | 'api';
+
+export type IntegrationLogEntry = {
+	id: string;
+	provider: string;
+	kind: IntegrationLogKind;
+	operation: string;
+	method: string;
+	url: string;
+	status?: number;
+	ok?: boolean;
+	durationMs: number;
+	errorMessage?: string;
+	createdAt: string;
+};
+
+export type IntegrationLogsResult = {
+	logs: IntegrationLogEntry[];
+	source: 'database' | 'memory';
+};
+
 export type WeatherSnapshot = {
 	condition: 'clear' | 'cloudy' | 'rain' | 'dust';
 	label: string;

@@ -22,6 +22,8 @@
 		AuthMode,
 		FeedbackRecord,
 		FollowupQuestion,
+		IntegrationLogEntry,
+		IntegrationLogsResult,
 		LocationSuggestion,
 		LocationValue,
 		MbtiType,
@@ -258,6 +260,11 @@
 	let recommendations = $state<RecommendationCard[]>([]);
 	let candidateBundle = $state<CandidateBundle | null>(null);
 	let compositionSource = $state<'openai' | 'fallback'>('fallback');
+	let integrationLogs = $state<IntegrationLogEntry[]>([]);
+	let integrationLogSource = $state<IntegrationLogsResult['source']>('memory');
+	let integrationLogsLoading = $state(false);
+	let integrationLogsMessage = $state('');
+	let integrationLogWindowStartedAt = $state('');
 	let activeSessionId = $state('');
 	let feedbackDraft = $state<Record<string, { sentiment?: 'like' | 'dislike'; reasons: string[] }>>(
 		{}
@@ -435,6 +442,40 @@
 		});
 	}
 
+	function resetIntegrationLogs() {
+		integrationLogs = [];
+		integrationLogSource = 'memory';
+		integrationLogsLoading = false;
+		integrationLogsMessage = '';
+		integrationLogWindowStartedAt = '';
+	}
+
+	async function refreshIntegrationLogs() {
+		if (!integrationLogWindowStartedAt) return;
+		integrationLogsLoading = true;
+		integrationLogsMessage = '';
+
+		const params = new URLSearchParams({
+			limit: '30',
+			since: integrationLogWindowStartedAt
+		});
+		const result = await serverJson<IntegrationLogsResult>(`/api/integration/logs?${params}`, {
+			method: 'GET'
+		});
+
+		if (result.type === 'ok') {
+			integrationLogs = result.data.logs;
+			integrationLogSource = result.data.source;
+			integrationLogsMessage = result.data.logs.length
+				? ''
+				: '이번 추천에서는 외부 API/AI 호출 로그가 아직 없어. API 키가 없으면 mock/fallback만 사용돼.';
+		} else {
+			integrationLogsMessage = result.message;
+		}
+
+		integrationLogsLoading = false;
+	}
+
 	function applyServerAuthResult(result: ServerAuthResult) {
 		histories = result.histories;
 		enterUser(result.user.id, result.profile);
@@ -503,6 +544,7 @@
 		recommendations = [];
 		candidateBundle = null;
 		compositionSource = 'fallback';
+		resetIntegrationLogs();
 		activeSessionId = '';
 		histories = [];
 	}
@@ -775,9 +817,7 @@
 		return validMbtiTypes.filter(
 			(type) =>
 				uppercaseValue.includes(type) ||
-				mbtiVoiceAliases[type].some((alias) =>
-					normalized.includes(normalizeAnswerText(alias))
-				)
+				mbtiVoiceAliases[type].some((alias) => normalized.includes(normalizeAnswerText(alias)))
 		);
 	}
 
@@ -930,6 +970,9 @@
 		dynamicFollowups = [];
 		followupSource = 'fallback';
 		recommendations = [];
+		candidateBundle = null;
+		compositionSource = 'fallback';
+		resetIntegrationLogs();
 		activeSessionId = '';
 		feedbackDraft = {};
 		speechTranscript = '';
@@ -1007,6 +1050,8 @@
 	async function continueBudget() {
 		if (!session.budgetTotal) return;
 		followupIndex = 0;
+		resetIntegrationLogs();
+		integrationLogWindowStartedAt = new Date().toISOString();
 		const result = await loadFollowups();
 		dynamicFollowups = result.questions;
 		session.dynamicQuestions = result.questions;
@@ -1069,6 +1114,7 @@
 		activeSessionId = session.id;
 		feedbackDraft = {};
 		saveHistory(cards);
+		await refreshIntegrationLogs();
 		screen = 'results';
 	}
 
@@ -1374,9 +1420,7 @@
 		onboardingSpeechStatus = '';
 
 		const answerHint =
-			question.id === 'mbtiType'
-				? 'ENFP처럼 MBTI 유형 하나만 말하거나, 잘 모르겠다고 말해줘.'
-				: '';
+			question.id === 'mbtiType' ? 'ENFP처럼 MBTI 유형 하나만 말하거나, 잘 모르겠다고 말해줘.' : '';
 		const utterance = new SpeechSynthesisUtterance(
 			[question.prompt, answerHint].filter(Boolean).join(' ')
 		);
@@ -1574,6 +1618,36 @@
 		return 'Swing';
 	}
 
+	function integrationProviderLabel(provider: string) {
+		if (provider === 'myrealtrip') return '마이리얼트립';
+		if (provider === 'api_fuse') return 'API Fuse';
+		if (provider === 'genrank') return 'GenRank';
+		if (provider === 'swing') return 'Swing';
+		if (provider === 'openai') return 'OpenAI';
+		if (provider === 'exaone') return 'EXAONE';
+		if (provider === 'public_data') return '공공데이터';
+		return provider;
+	}
+
+	function integrationKindLabel(kind: IntegrationLogEntry['kind']) {
+		return kind === 'ai' ? 'AI' : 'API';
+	}
+
+	function integrationStatusLabel(log: IntegrationLogEntry) {
+		if (log.errorMessage) return '오류';
+		if (log.ok === true) return log.status ? `${log.status}` : '성공';
+		if (log.ok === false) return log.status ? `${log.status}` : '실패';
+		return '기록';
+	}
+
+	function integrationLogTime(value: string) {
+		return new Date(value).toLocaleTimeString('ko-KR', {
+			hour: '2-digit',
+			minute: '2-digit',
+			second: '2-digit'
+		});
+	}
+
 	function resultTypeLabel(card: RecommendationCard) {
 		if (card.resultType === 'single_activity') return '단일 활동';
 		if (card.resultType === 'mini_course') return '미니 코스';
@@ -1729,14 +1803,10 @@
 							<p class="eyebrow">온보딩</p>
 							<h1>안녕, 나는 사이야.</h1>
 							<p>
-								너한테 더 잘 맞는 선택지를 찾아주려고, 먼저 너를 조금 알아보는 질문을
-								몇 개만 할게.
+								너한테 더 잘 맞는 선택지를 찾아주려고, 먼저 너를 조금 알아보는 질문을 몇 개만 할게.
 							</p>
 						</div>
-						<div
-							class="onboarding-mascot-ring onboarding-intro-mascot-ring"
-							aria-hidden="true"
-						>
+						<div class="onboarding-mascot-ring onboarding-intro-mascot-ring" aria-hidden="true">
 							<div class="mascot mascot-happy onboarding-mascot">
 								<img src={saiSymbol} alt="" />
 							</div>
@@ -2092,6 +2162,14 @@
 					</div>
 					<div class="result-tools">
 						<span>{compositionSource === 'openai' ? 'OpenAI 작곡' : 'fallback 작곡'}</span>
+						<button
+							class="secondary small"
+							type="button"
+							onclick={refreshIntegrationLogs}
+							disabled={integrationLogsLoading}
+						>
+							{integrationLogsLoading ? '로그 확인 중' : '사용 로그'}
+						</button>
 						<button class="secondary small" type="button" onclick={speakResults}>읽어줘</button>
 					</div>
 				</div>
@@ -2106,6 +2184,45 @@
 						{/each}
 					</div>
 				{/if}
+
+				<section class="integration-log-panel" aria-label="외부 API와 AI 사용 로그">
+					<div class="integration-log-header">
+						<div>
+							<p class="eyebrow">사용 로그</p>
+							<h2>외부 API / AI 호출</h2>
+						</div>
+						<span>{integrationLogSource === 'database' ? 'DB' : '임시'}</span>
+					</div>
+
+					{#if integrationLogs.length}
+						<div class="integration-log-list">
+							{#each integrationLogs as log (log.id)}
+								<div class="integration-log-row">
+									<div>
+										<strong>{integrationProviderLabel(log.provider)}</strong>
+										<span>{integrationKindLabel(log.kind)} · {log.operation}</span>
+									</div>
+									<div>
+										<em
+											class={log.ok === true
+												? 'ok'
+												: log.ok === false || log.errorMessage
+													? 'error'
+													: ''}
+										>
+											{integrationStatusLabel(log)}
+										</em>
+										<span>{log.durationMs}ms · {integrationLogTime(log.createdAt)}</span>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="integration-log-empty">
+							{integrationLogsMessage || '이번 추천의 외부 API/AI 호출 로그를 불러오는 중이야.'}
+						</p>
+					{/if}
+				</section>
 
 				<div class="recommendation-list">
 					{#each recommendations as card, index (card.id)}
@@ -3126,6 +3243,89 @@
 	.source-strip span.ok {
 		background: rgba(97, 176, 126, 0.12);
 		color: #28764e;
+	}
+
+	.integration-log-panel {
+		display: grid;
+		gap: 10px;
+		border: 1px solid var(--line);
+		border-radius: 18px;
+		background: #fff;
+		padding: 14px;
+		box-shadow: 0 4px 14px rgba(120, 110, 160, 0.08);
+	}
+
+	.integration-log-header,
+	.integration-log-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.integration-log-header h2 {
+		margin: 0;
+		font-size: 16px;
+		line-height: 1.25;
+	}
+
+	.integration-log-header > span {
+		border-radius: 999px;
+		background: #f2edf7;
+		color: var(--muted);
+		padding: 6px 9px;
+		font-size: 11px;
+		font-weight: 900;
+	}
+
+	.integration-log-list {
+		display: grid;
+		gap: 8px;
+	}
+
+	.integration-log-row {
+		min-height: 48px;
+		border-top: 1px solid rgba(236, 231, 243, 0.84);
+		padding-top: 8px;
+	}
+
+	.integration-log-row > div {
+		display: grid;
+		gap: 3px;
+		min-width: 0;
+	}
+
+	.integration-log-row > div:last-child {
+		justify-items: end;
+		text-align: right;
+	}
+
+	.integration-log-row strong,
+	.integration-log-row em {
+		color: var(--ink);
+		font-size: 13px;
+		font-style: normal;
+		font-weight: 900;
+	}
+
+	.integration-log-row span,
+	.integration-log-empty {
+		color: var(--muted);
+		font-size: 11px;
+		font-weight: 800;
+	}
+
+	.integration-log-row em.ok {
+		color: #28764e;
+	}
+
+	.integration-log-row em.error {
+		color: #b74747;
+	}
+
+	.integration-log-empty {
+		margin: 0;
+		line-height: 1.45;
 	}
 
 	.recommendation-list {
