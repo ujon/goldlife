@@ -10,8 +10,10 @@ const SUPERTONE_DEFAULT_OUTPUT_FORMAT = 'mp3';
 const SUPERTONE_MAX_TEXT_LENGTH = 300;
 
 export const POST: RequestHandler = async ({ request }) => {
-	const body = (await request.json()) as { text?: string };
-	const text = body.text?.trim();
+	const body = await readTtsRequestBody(request);
+	if (body.type === 'error') return badRequest(body.message);
+
+	const text = typeof body.data.text === 'string' ? body.data.text.trim() : '';
 
 	if (!text) return badRequest('text is required');
 	if (text.length > SUPERTONE_MAX_TEXT_LENGTH) {
@@ -26,19 +28,25 @@ export const POST: RequestHandler = async ({ request }) => {
 	const outputFormat = env.SUPERTONE_OUTPUT_FORMAT || SUPERTONE_DEFAULT_OUTPUT_FORMAT;
 	const url = new URL(`/v1/text-to-speech/${voiceId}`, baseUrl);
 
-	const response = await fetch(url, {
-		method: 'POST',
-		headers: {
-			'content-type': 'application/json',
-			'x-sup-api-key': env.SUPERTONE_API_KEY
-		},
-		body: JSON.stringify({
-			text,
-			language: 'ko',
-			model: modelId,
-			output_format: outputFormat
-		})
-	});
+	let response: Response;
+	try {
+		response = await fetch(url, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				'x-sup-api-key': env.SUPERTONE_API_KEY
+			},
+			body: JSON.stringify({
+				text,
+				language: 'ko',
+				model: modelId,
+				output_format: outputFormat
+			})
+		});
+	} catch (error) {
+		console.error('Supertone TTS request failed', error);
+		return json({ error: 'Supertone TTS failed' }, { status: 502 });
+	}
 
 	if (!response.ok || !response.body) {
 		const detail = await response.text().catch(() => '');
@@ -53,3 +61,24 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 	});
 };
+
+async function readTtsRequestBody(request: Request) {
+	let raw = '';
+	try {
+		raw = await request.text();
+	} catch {
+		return { type: 'error' as const, message: 'request body is invalid' };
+	}
+
+	if (!raw.trim()) return { type: 'ok' as const, data: {} as { text?: unknown } };
+
+	try {
+		const data = JSON.parse(raw) as unknown;
+		if (!data || typeof data !== 'object' || Array.isArray(data)) {
+			return { type: 'ok' as const, data: {} as { text?: unknown } };
+		}
+		return { type: 'ok' as const, data: data as { text?: unknown } };
+	} catch {
+		return { type: 'error' as const, message: 'request body must be valid JSON' };
+	}
+}
