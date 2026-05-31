@@ -3385,19 +3385,6 @@
 				)}
 
 				<div class="onboarding-answer-panel recommendation-answer-panel">
-					<div class="relation-picker" aria-label="함께하는 관계 선택">
-						{#each companionRelationOptions as option (option.id)}
-							<button
-								class={`relation-option ${selectedCompanionRelations.includes(option.id) ? 'active' : ''}`}
-								type="button"
-								onclick={() => toggleCompanionRelation(option.id)}
-								aria-pressed={selectedCompanionRelations.includes(option.id)}
-							>
-								<span>{option.icon}</span>
-								<strong>{option.label}</strong>
-							</button>
-						{/each}
-					</div>
 					<label class="field compact">
 						<span>직접 말 남기기</span>
 						<input
@@ -3406,11 +3393,6 @@
 							placeholder="예: 엄마랑 친구랑 / 아내랑 아이와 함께"
 						/>
 					</label>
-					<p>
-						{selectedCompanionRelationOptions.length
-							? `${selectedCompanionSummary} 기준으로 볼게.`
-							: '말로 알려줘도 내가 구성원을 골라볼게.'}
-					</p>
 				</div>
 
 				<div class="bottom-actions">
