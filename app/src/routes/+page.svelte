@@ -349,7 +349,6 @@
 	let saiSpeechRequestId = 0;
 	let activeSaiAudio: HTMLAudioElement | null = null;
 	let activeSaiAudioUrl = '';
-	let phoneShell: HTMLElement | null = null;
 	// Plain (non-reactive) dedupe key so the per-screen voice effect speaks a line
 	// only once per screen entry. Seeded with 'auth' so the very first cold load
 	// (no user gesture yet -> autoplay blocked) does not fire a wasted TTS request.
@@ -1770,18 +1769,11 @@
 		selectedRecommendationId = cardId;
 		recordClick(cardId);
 		screen = 'resultDetail';
-		scrollPhoneToTop();
 	}
 
 	function backToResults() {
 		externalSheet = null;
 		screen = 'results';
-		scrollPhoneToTop();
-	}
-
-	function scrollPhoneToTop() {
-		if (!browser) return;
-		requestAnimationFrame(() => phoneShell?.scrollTo({ top: 0, behavior: 'auto' }));
 	}
 
 	function externalProviderLabel(url: string) {
@@ -3085,7 +3077,7 @@
 {/snippet}
 
 <main class="app-frame">
-	<section class={`phone-shell state-${screen}`} bind:this={phoneShell}>
+	<section class={`phone-shell state-${screen}`}>
 		<header class="topbar">
 			{#if progress.total > 0}
 				<div
