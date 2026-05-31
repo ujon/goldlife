@@ -440,16 +440,6 @@
 	);
 	let currentFollowup = $derived(followupQuestions[followupIndex]);
 	let recentHistory = $derived(currentUserId ? histories.slice(0, 3) : []);
-	let recommendationTotalCost = $derived(
-		recommendations.reduce((total, card) => total + card.estimatedCost, 0)
-	);
-	let recommendationBudgetLimit = $derived(
-		Math.max(session.budgetTotal || recommendationTotalCost || 1, 1)
-	);
-	let recommendationBudgetPercent = $derived(
-		`${Math.min(100, Math.round((recommendationTotalCost / recommendationBudgetLimit) * 100))}%`
-	);
-	let recommendationBudgetOver = $derived(recommendationTotalCost > recommendationBudgetLimit);
 	let selectedRecommendation = $derived(
 		recommendations.find((card) => card.id === selectedRecommendationId) ?? null
 	);
@@ -3541,23 +3531,6 @@
 					</div>
 				</div>
 
-				<div
-					class={`budget ${recommendationBudgetOver ? 'over' : ''}`}
-					aria-label={`추천 합계 ${formatKrw(recommendationTotalCost)}, 예산 ${formatKrw(recommendationBudgetLimit)}`}
-				>
-					<div class="bl">
-						<span>예산 합계</span>
-						<span
-							><b>{formatKrw(recommendationTotalCost)}</b> / {formatKrw(
-								recommendationBudgetLimit
-							)}</span
-						>
-					</div>
-					<div class="meter" aria-hidden="true">
-						<i style:width={recommendationBudgetPercent}></i>
-					</div>
-				</div>
-
 				<div class="recommendation-list card-picker" aria-label="추천 카드 목록">
 					{#each recommendations as card, index (card.id)}
 						{@const visual = summaryVisual(card)}
@@ -4827,9 +4800,16 @@
 	}
 
 	.result-mascot {
-		width: 78px;
-		height: 78px;
+		width: 54px;
+		height: 54px;
 		flex: 0 0 auto;
+	}
+
+	.result-mascot img {
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
+		filter: drop-shadow(0 8px 14px rgba(120, 90, 200, 0.14));
 	}
 
 	.said {
