@@ -1,0 +1,55 @@
+# Supertone API Documentation
+
+> Empowering Voices, Simplifying AI Integration
+
+## Docs
+
+- [Authentication](https://docs.supertoneapi.com/en/api-reference/authentication.md): All Supertone API requests authenticate with an API key sent in the `x-sup-api-key` header.
+- [Create cloned voice](https://docs.supertoneapi.com/en/api-reference/endpoints/create-cloned-voice.md): Register a new custom voice by uploading a sample audio file.
+- [Delete custom voice](https://docs.supertoneapi.com/en/api-reference/endpoints/delete-custom-voice.md): Permanently delete a custom (cloned) voice from your account.
+- [Edit custom voice](https://docs.supertoneapi.com/en/api-reference/endpoints/edit-custom-voice.md): Update the name or description of a custom (cloned) voice.
+- [Get credit balance](https://docs.supertoneapi.com/en/api-reference/endpoints/get-credit-balance.md): Return the available credit balance on your account.
+- [Get custom voice](https://docs.supertoneapi.com/en/api-reference/endpoints/get-custom-voice.md): Retrieve a single custom (cloned) voice by ID.
+- [Get usage](https://docs.supertoneapi.com/en/api-reference/endpoints/get-usage.md): Bucketed usage analytics with breakdowns by voice, API key, or model — ideal for dashboards and reporting.
+- [Get voice](https://docs.supertoneapi.com/en/api-reference/endpoints/get-voice.md): Retrieve a single preset voice by ID.
+- [Get voice usage](https://docs.supertoneapi.com/en/api-reference/endpoints/get-voice-usage.md): Per-voice usage history aggregated by date — generated minutes per `(date, voice, style, language, model)`.
+- [List custom voices](https://docs.supertoneapi.com/en/api-reference/endpoints/list-custom-voices.md): Retrieve all custom (cloned) voices registered on your account.
+- [List voices](https://docs.supertoneapi.com/en/api-reference/endpoints/list-voices.md): Retrieve all preset voices available to your account.
+- [Predict duration](https://docs.supertoneapi.com/en/api-reference/endpoints/predict-duration.md): Estimate the length of generated speech for a given text — without producing audio or consuming credits.
+- [Search custom voices](https://docs.supertoneapi.com/en/api-reference/endpoints/search-custom-voices.md): Filter your custom (cloned) voices by name or description.
+- [Search voices](https://docs.supertoneapi.com/en/api-reference/endpoints/search-voices.md): Filter the preset voice library by language, style, gender, age, use case, or model.
+- [Stream speech](https://docs.supertoneapi.com/en/api-reference/endpoints/stream-text-to-speech.md): Convert text to speech and return the output as a chunked audio stream.
+- [Create speech](https://docs.supertoneapi.com/en/api-reference/endpoints/text-to-speech.md): Convert text into a complete audio file using a voice of your choice.
+- [Introduction](https://docs.supertoneapi.com/en/api-reference/introduction.md): REST API reference for the Supertone TTS platform — endpoints, parameters, and response schemas.
+- [Authentication](https://docs.supertoneapi.com/en/docs/authentication.md): Issue an API key in the developer console and authenticate every Supertone API request with the `x-sup-api-key` header.
+- [Custom voices](https://docs.supertoneapi.com/en/docs/core-concepts/custom-voices.md): Voice clones you register and manage on your own account — create, list, search, update, and delete.
+- [Models](https://docs.supertoneapi.com/en/docs/core-concepts/models.md): Compare Supertone TTS models on quality, latency, language coverage, voice settings, and features — and pick the right one for your use case.
+- [Voices](https://docs.supertoneapi.com/en/docs/core-concepts/voices.md): Understand voice IDs, browse the preset voice library, and search by language, style, or other filters.
+- [Use a custom voice](https://docs.supertoneapi.com/en/docs/examples/custom-voice-tts.md): Clone a voice from an audio sample, then use it in TTS calls just like a preset voice.
+- [Generate phonemes for lip sync](https://docs.supertoneapi.com/en/docs/examples/lip-sync-phonemes.md): Request phoneme timestamps alongside the audio and use them to drive viseme animation.
+- [Stream TTS from an LLM response](https://docs.supertoneapi.com/en/docs/examples/llm-streaming-tts.md): Pipe an LLM's text output through Supertone so the user hears the answer as it is generated — runnable examples for OpenAI and Anthropic.
+- [Long-form narration](https://docs.supertoneapi.com/en/docs/examples/long-form-narration.md): Generate a multi-paragraph narration from a script — letting the SDK handle the 300-character API limit for you.
+- [Voice search and preview](https://docs.supertoneapi.com/en/docs/examples/voice-search-and-preview.md): Build an in-app voice picker — search the library, render sample audio, and let users pick a voice ID.
+- [Welcome](https://docs.supertoneapi.com/en/docs/overview.md): Production-grade voice AI in 31 languages — character-driven, expressive, and adjustable.
+- [Cost and usage](https://docs.supertoneapi.com/en/docs/production/cost-and-usage.md): Forecast credit cost, check your balance, monitor usage by voice or time bucket, and set up anomaly alerts.
+- [Error handling](https://docs.supertoneapi.com/en/docs/production/error-handling.md): HTTP status codes returned by the Supertone API, their causes, and the right response in production code.
+- [Latency optimization](https://docs.supertoneapi.com/en/docs/production/latency-optimization.md): Reduce time-to-audio in real-time experiences — model choice, sentence batching, and connection reuse.
+- [Rate limits](https://docs.supertoneapi.com/en/docs/production/rate-limits.md): Per-minute request limits by account tier, and how to respond when limits are exceeded.
+- [Retries and backoff](https://docs.supertoneapi.com/en/docs/production/retries-and-backoff.md): Retry transient failures correctly — which status codes to retry, how long to wait, and how to configure the SDKs.
+- [Quickstart](https://docs.supertoneapi.com/en/docs/quickstart.md): Install an SDK, set your API key, and generate your first speech audio in under five minutes.
+- [FAQ](https://docs.supertoneapi.com/en/docs/resources/faq.md): Frequently asked questions about the Supertone API — keys, voices, credits, errors, and integrations.
+- [Release notes](https://docs.supertoneapi.com/en/docs/resources/release-notes.md): Latest updates and changes to the Supertone API.
+- [Support](https://docs.supertoneapi.com/en/docs/resources/support.md)
+- [SDK overview](https://docs.supertoneapi.com/en/docs/sdks/overview.md): Official Python and TypeScript SDKs for the Supertone API — installation, runtime support, and feature comparison.
+- [Python SDK](https://docs.supertoneapi.com/en/docs/sdks/python.md): Install, authenticate, and use the Supertone Python SDK — sync and async clients, streaming, auto-chunking, and error handling.
+- [TypeScript SDK](https://docs.supertoneapi.com/en/docs/sdks/typescript.md): Install, authenticate, and use the Supertone TypeScript SDK — promise-based, streaming, auto-chunking, and runs in Node and Bun.
+- [Create speech](https://docs.supertoneapi.com/en/docs/text-to-speech/create-speech.md): Generate a complete audio file from text — the most common Supertone TTS call. Covers request fields, output formats, response shape, and saving the result.
+- [Long text](https://docs.supertoneapi.com/en/docs/text-to-speech/long-text.md): How the 300-character API limit interacts with SDK auto-chunking — and how to handle book-length inputs.
+- [Normalized text](https://docs.supertoneapi.com/en/docs/text-to-speech/normalized-text.md): Improve pronunciation accuracy — especially for Japanese — by pairing your input text with a pronunciation-oriented version.
+- [Pronunciation and phonemes](https://docs.supertoneapi.com/en/docs/text-to-speech/pronunciation-and-phonemes.md): Get phoneme symbols and timestamps for lip-sync, animation, and pronunciation control.
+- [Stream speech](https://docs.supertoneapi.com/en/docs/text-to-speech/stream-speech.md): Receive audio chunks as they are synthesized — useful when a single clip is long and you want to start playback before generation finishes.
+- [Voice settings](https://docs.supertoneapi.com/en/docs/text-to-speech/voice-settings.md): Fine-tune pitch, intonation, speed, and other delivery parameters with the `voice_settings` field.
+
+## OpenAPI Specs
+
+- [openapi](https://docs.supertoneapi.com/openapi.json)
