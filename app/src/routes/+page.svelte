@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { resolve } from '$app/paths';
 	import saiSymbol from '$lib/assets/sai-symbol.svg';
+	import { createSubscriber } from 'svelte/reactivity';
 	import type { CandidateBundle } from '$lib/sai/candidates';
 	import {
 		applyTimeUtilization,
@@ -10,9 +11,7 @@
 		normalizeCompanionRelations,
 		composeRecommendations,
 		createRecommendationSession,
-		dislikeReasons,
 		formatKrw,
-		likeReasons,
 		partyCountForSession,
 		primarySituationFromRelations,
 		timeMeta
@@ -20,7 +19,6 @@
 	import type {
 		AuthMode,
 		CompanionRelation,
-		FeedbackRecord,
 		FollowupQuestion,
 		LocationSuggestion,
 		LocationValue,
@@ -105,11 +103,12 @@
 		label: string;
 	};
 	type RecommendationItem = RecommendationCard['items'][number];
-	type DetailAction = {
-		key: string;
-		label: string;
+	type ExternalSheet = {
+		cardId: string;
+		title: string;
+		provider: string;
 		url: string;
-		variant: 'primary' | 'secondary';
+		description: string;
 	};
 	type DetailVisual = {
 		key: string;
@@ -119,10 +118,12 @@
 		href: string;
 		tone: number;
 	};
-	type DetailFact = {
-		key: string;
-		label: string;
-		value: string;
+	type LoadingSpeaker = 'left' | 'center' | 'right';
+	type LoadingLine = {
+		who: LoadingSpeaker;
+		text: string;
+		em?: string;
+		nod: LoadingSpeaker[];
 	};
 
 	const defaultLocation: LocationValue = {
@@ -151,6 +152,34 @@
 		'ENTJ'
 	].map((type) => ({ id: type.toLowerCase(), label: type, value: type }));
 	const validMbtiTypes = mbtiOptions.map((option) => option.value) as KnownMbtiType[];
+	const loadingScript: LoadingLine[] = [
+		{ who: 'left', text: '오! 이 액티비티', em: '새롭다', nod: [] },
+		{ who: 'right', text: '근데 예산 좀 빠듯하지 않아?', nod: ['center'] },
+		{ who: 'center', text: '둘 다 살리는 코스로 짜보자', nod: ['left', 'right'] },
+		{ who: 'left', text: '비 와서', em: '실내가 낫겠다', nod: ['right'] },
+		{ who: 'right', text: '여기 도보 8분컷, 동선 좋아', nod: ['center'] },
+		{ who: 'center', text: '맛집 평점도 4.7 ㅋㅋ', nod: ['left'] },
+		{ who: 'left', text: '이 조합', em: '완벽한데?', nod: ['center', 'right'] },
+		{ who: 'right', text: 'ok 예산 딱 맞췄어', nod: ['center', 'left'] }
+	];
+	const loadingPhases = [
+		'날씨 확인 중',
+		'지도 탐색 중',
+		'맛집 비교 중',
+		'액티비티 추리는 중',
+		'예산 맞추는 중',
+		'동선 최적화 중'
+	];
+	const loadingTurnSubscriber = createSubscriber((update) => {
+		if (!browser) return () => {};
+		const timer = window.setInterval(update, 2100);
+		return () => window.clearInterval(timer);
+	});
+	const loadingPhaseSubscriber = createSubscriber((update) => {
+		if (!browser) return () => {};
+		const timer = window.setInterval(update, 1900);
+		return () => window.clearInterval(timer);
+	});
 	const mbtiVoiceAliases: Record<KnownMbtiType, string[]> = {
 		ISTJ: ['아이에스티제이', '잇티제'],
 		ISFJ: ['아이에스에프제이', '잇프제'],
@@ -293,12 +322,9 @@
 	let dynamicFollowups = $state<FollowupQuestion[]>([]);
 	let followupSource = $state<'exaone' | 'openai' | 'fallback'>('fallback');
 	let recommendations = $state<RecommendationCard[]>([]);
-	let selectedRecommendationId = $state('');
+	let externalSheet = $state<ExternalSheet | null>(null);
 	let candidateBundle = $state<CandidateBundle | null>(null);
 	let activeSessionId = $state('');
-	let feedbackDraft = $state<Record<string, { sentiment?: 'like' | 'dislike'; reasons: string[] }>>(
-		{}
-	);
 	let listeningFor = $state<SpeechTarget | null>(null);
 	let speechTranscript = $state('');
 	let speechMessage = $state('');
@@ -406,15 +432,22 @@
 	);
 	let currentFollowup = $derived(followupQuestions[followupIndex]);
 	let recentHistory = $derived(currentUserId ? histories.slice(0, 3) : []);
-	let selectedRecommendation = $derived(
-		recommendations.find((card) => card.id === selectedRecommendationId) ?? null
+	let recommendationTotalCost = $derived(
+		recommendations.reduce((total, card) => total + card.estimatedCost, 0)
 	);
+	let recommendationBudgetLimit = $derived(
+		Math.max(session.budgetTotal || recommendationTotalCost || 1, 1)
+	);
+	let recommendationBudgetPercent = $derived(
+		`${Math.min(100, Math.round((recommendationTotalCost / recommendationBudgetLimit) * 100))}%`
+	);
+	let recommendationBudgetOver = $derived(recommendationTotalCost > recommendationBudgetLimit);
 	let mascotState = $derived(
 		saiSpeaking
 			? 'talking'
 			: screen === 'generating'
 				? 'thinking'
-				: screen === 'results' || screen === 'resultDetail'
+				: screen === 'results'
 					? 'happy'
 					: 'idle'
 	);
@@ -424,6 +457,18 @@
 	let progressPercent = $derived(
 		progress.total ? `${Math.min(100, (progress.current / progress.total) * 100)}%` : '0%'
 	);
+	let loadingTurn = $derived.by(() => {
+		if (screen !== 'generating') return 0;
+		loadingTurnSubscriber();
+		return Math.floor(Date.now() / 2100);
+	});
+	let loadingPhaseIndex = $derived.by(() => {
+		if (screen !== 'generating') return 0;
+		loadingPhaseSubscriber();
+		return Math.floor(Date.now() / 1900);
+	});
+	let loadingLine = $derived(loadingScript[loadingTurn % loadingScript.length]);
+	let loadingPhase = $derived(loadingPhases[loadingPhaseIndex % loadingPhases.length]);
 
 	const onboardingIntroContent = {
 		eyebrow: '온보딩',
@@ -541,6 +586,26 @@
 		return (event.currentTarget as HTMLTextAreaElement).value;
 	}
 
+	function loadingMascotState(position: LoadingSpeaker) {
+		return loadingLine.who === position ? 'talking' : 'thinking';
+	}
+
+	function loadingMascotClasses(position: LoadingSpeaker) {
+		const classes = ['cm', position];
+		if (position !== 'center') classes.push('lean');
+		if (loadingLine.who === position) classes.push('speaking');
+		if (loadingLine.nod.includes(position)) classes.push('nod');
+		if (loadingLine.who === 'left' && position !== 'left') classes.push('look-l');
+		if (loadingLine.who === 'right' && position !== 'right') classes.push('look-r');
+		if (loadingLine.who === 'center') {
+			if (position === 'left') classes.push('look-r');
+			if (position === 'right') classes.push('look-l');
+		}
+		if (position === 'left' && loadingLine.who !== 'center') classes.push('look-r');
+		if (position === 'right' && loadingLine.who !== 'center') classes.push('look-l');
+		return classes.join(' ');
+	}
+
 	function jsonCopy<T>(value: T): T {
 		return JSON.parse(JSON.stringify(value)) as T;
 	}
@@ -624,14 +689,6 @@
 		return serverJson<{ saved: boolean }>('/api/recommendation/history', {
 			method: 'POST',
 			body: JSON.stringify({ userId: currentUserId, session: nextSession, cards })
-		});
-	}
-
-	async function syncServerFeedback(sessionId: string, feedback: FeedbackRecord[]) {
-		if (!currentUserId) return;
-		return serverJson<{ saved: boolean }>('/api/recommendation/feedback', {
-			method: 'POST',
-			body: JSON.stringify({ userId: currentUserId, sessionId, feedback })
 		});
 	}
 
@@ -1153,10 +1210,8 @@
 		dynamicFollowups = [];
 		followupSource = 'fallback';
 		recommendations = [];
-		selectedRecommendationId = '';
 		candidateBundle = null;
 		activeSessionId = '';
-		feedbackDraft = {};
 		speechTranscript = '';
 		speechMessage = '';
 		recommendationSpeechCaptions = {};
@@ -1407,9 +1462,7 @@
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		const cards = scopeCardsToSession(composed.cards, session.id);
 		recommendations = cards;
-		selectedRecommendationId = '';
 		activeSessionId = session.id;
-		feedbackDraft = {};
 		saveHistory(cards);
 		screen = 'results';
 	}
@@ -1687,71 +1740,49 @@
 	function loadHistory(item: RecommendationHistoryItem) {
 		session = jsonCopy(item.session);
 		recommendations = jsonCopy(item.cards);
-		selectedRecommendationId = '';
 		activeSessionId = item.session.id;
-		feedbackDraft = Object.fromEntries(
-			item.feedback.map((feedback) => [
-				feedback.cardId,
-				{
-					sentiment: feedback.sentiment,
-					reasons: feedback.reasons
-				}
-			])
-		);
 		screen = 'results';
 	}
 
 	function openRecommendationDetail(cardId: string) {
-		selectedRecommendationId = cardId;
-		recordClick(cardId);
-		screen = 'resultDetail';
-	}
-
-	function backToResults() {
-		screen = 'results';
-	}
-
-	function setFeedback(cardId: string, sentiment: 'like' | 'dislike') {
-		const current = feedbackDraft[cardId] ?? { reasons: [] };
-		feedbackDraft = {
-			...feedbackDraft,
-			[cardId]: {
-				...current,
-				sentiment
-			}
-		};
-		syncFeedback();
-	}
-
-	function toggleFeedbackReason(cardId: string, reason: string) {
-		const current = feedbackDraft[cardId] ?? { reasons: [] };
-		const reasons = current.reasons.includes(reason)
-			? current.reasons.filter((item) => item !== reason)
-			: [...current.reasons, reason];
-		feedbackDraft = {
-			...feedbackDraft,
-			[cardId]: {
-				...current,
-				reasons
-			}
-		};
-		syncFeedback();
-	}
-
-	function syncFeedback() {
-		if (!currentUserId || !activeSessionId) return;
-		const feedback: FeedbackRecord[] = Object.entries(feedbackDraft)
-			.filter(([, value]) => value.sentiment)
-			.map(([cardId, value]) => ({
-				cardId,
-				sentiment: value.sentiment ?? 'like',
-				reasons: value.reasons,
-				createdAt: new Date().toISOString()
-			}));
-		histories = histories.map((item) =>
-			item.session.id === activeSessionId ? { ...item, feedback } : item
+		const card = recommendations.find((item) => item.id === cardId);
+		if (!card) return;
+		openExternalSheet(
+			card.id,
+			card.title,
+			cardReservationUrl(card),
+			`${formatKrw(card.estimatedCost)} · 실제 예약 페이지로 이동해서 바로 예약할 수 있어.`
 		);
-		void syncServerFeedback(activeSessionId, feedback);
+	}
+
+	function externalProviderLabel(url: string) {
+		try {
+			const host = new URL(url).hostname;
+			if (host.endsWith('myrealtrip.com')) return '마이리얼트립';
+			if (host.endsWith('catchtable.co.kr')) return '캐치테이블';
+			if (host.includes('kakao')) return '카카오맵';
+			if (host.includes('calendar.google')) return '구글 캘린더';
+			if (host.includes('naver')) return '네이버';
+			return host.replace(/^www\./, '');
+		} catch {
+			return '외부 서비스';
+		}
+	}
+
+	function openExternalSheet(cardId: string, title: string, url: string, description: string) {
+		if (!url) return;
+		recordClick(cardId);
+		externalSheet = {
+			cardId,
+			title,
+			provider: externalProviderLabel(url),
+			url,
+			description
+		};
+	}
+
+	function closeExternalSheet() {
+		externalSheet = null;
 	}
 
 	function recordClick(cardId: string) {
@@ -2577,7 +2608,7 @@
 			};
 		}
 
-		const effectiveScreen = targetScreen === 'resultDetail' ? 'results' : targetScreen;
+		const effectiveScreen = targetScreen;
 		const flow: Screen[] = [
 			'time',
 			'situation',
@@ -2625,30 +2656,6 @@
 		return '추천 후보';
 	}
 
-	function resultTypeLabel(card: RecommendationCard) {
-		if (card.resultType === 'single_activity') return '단일 활동';
-		if (card.resultType === 'mini_course') return '미니 코스';
-		if (card.resultType === 'timetable') return '시간표형';
-		return '코스형';
-	}
-
-	function weatherFitLabel(card: RecommendationCard) {
-		if (card.weatherFit === 'indoor') return '실내 중심';
-		if (card.weatherFit === 'mostly_indoor') return '대부분 실내';
-		if (card.weatherFit === 'outdoor') return '야외 적합';
-		return '날씨 무난';
-	}
-
-	function transportModeLabel(mode?: RecommendationCard['routeTransport']) {
-		if (mode === 'walk') return '도보';
-		if (mode === 'car') return '자동차';
-		if (mode === 'taxi') return '택시';
-		if (mode === 'shared') return '공유 모빌리티';
-		if (mode === 'transit') return '대중교통';
-		if (mode === 'flight') return '항공';
-		return '이동';
-	}
-
 	function itemPrimaryUrl(item: RecommendationItem) {
 		return reservationUrlForItem(item) ?? itemLocationUrl(item);
 	}
@@ -2665,51 +2672,6 @@
 		);
 	}
 
-	function cardRouteMapUrl(card: RecommendationCard) {
-		const item = mappableItems(card)[0];
-		if (item) return item.routeMapUrl ?? kakaoRouteUrl(item.title, item.lat, item.lng);
-		return kakaoRouteDeepLink(card.routeMapUrl);
-	}
-
-	function routeMapEmbedUrl(card: RecommendationCard) {
-		const places = mappableItems(card);
-		const marker = places[0];
-		if (!marker || marker.lat == null || marker.lng == null) return '';
-		const latValues = places.map((item) => item.lat as number);
-		const lngValues = places.map((item) => item.lng as number);
-		const minLat = Math.min(...latValues);
-		const maxLat = Math.max(...latValues);
-		const minLng = Math.min(...lngValues);
-		const maxLng = Math.max(...lngValues);
-		const latPadding = Math.max((maxLat - minLat) * 0.4, 0.006);
-		const lngPadding = Math.max((maxLng - minLng) * 0.4, 0.006);
-		const bbox = `${minLng - lngPadding}%2C${minLat - latPadding}%2C${maxLng + lngPadding}%2C${maxLat + latPadding}`;
-		const lat = marker.lat;
-		const lng = marker.lng;
-		return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat}%2C${lng}`;
-	}
-
-	function uniqueText(values: Array<string | undefined>) {
-		const seen: string[] = [];
-		return values.filter((value): value is string => {
-			const normalized = value?.replace(/\s/g, '').toLowerCase();
-			if (!value || !normalized || seen.includes(normalized)) return false;
-			seen.push(normalized);
-			return true;
-		});
-	}
-
-	function compactItemMeta(item: RecommendationItem) {
-		return uniqueText([
-			item.travelTimeText,
-			item.dwellTimeText,
-			item.arrivalTimeText,
-			item.availabilityText,
-			item.openingHoursText,
-			item.address
-		]).join(' · ');
-	}
-
 	function uniqueRecommendationItems(card: RecommendationCard) {
 		const seen: string[] = [];
 		return card.items.filter((item) => {
@@ -2718,10 +2680,6 @@
 			seen.push(key);
 			return true;
 		});
-	}
-
-	function mappableItems(card: RecommendationCard) {
-		return uniqueRecommendationItems(card).filter((item) => item.lat != null && item.lng != null);
 	}
 
 	function detailVisuals(card: RecommendationCard): DetailVisual[] {
@@ -2741,101 +2699,20 @@
 		}));
 	}
 
-	function detailFacts(card: RecommendationCard): DetailFact[] {
-		return [
-			{ key: 'duration', label: '시간', value: card.estimatedDuration },
-			...(card.timeUsageText
-				? [{ key: 'time-usage', label: '시간 사용', value: card.timeUsageText }]
-				: []),
-			{ key: 'cost', label: '예상 비용', value: formatKrw(card.estimatedCost) },
-			{ key: 'per-person', label: '1인당', value: card.perPersonText.replace('1인당 약 ', '') },
-			{ key: 'weather', label: '날씨', value: weatherFitLabel(card) }
-		];
+	function summaryVisual(card: RecommendationCard) {
+		return detailVisuals(card)[0] ?? null;
 	}
 
-	function detailBadgeList(card: RecommendationCard) {
-		return uniqueText([...card.badges, ...card.companionFit]).slice(0, 10);
+	function resultSlotClass(index: number) {
+		return index % 3 === 0 ? 'a' : index % 3 === 1 ? 'b' : 's';
 	}
 
-	function addUniqueAction(actions: DetailAction[], action: DetailAction | null) {
-		if (!action?.url) return;
-		const normalized = action.url.replace(/\/$/, '');
-		if (actions.some((item) => item.url.replace(/\/$/, '') === normalized)) return;
-		actions.push(action);
+	function resultSlotLabel(card: RecommendationCard, index: number) {
+		return card.label || (index % 3 === 0 ? '추천 1' : index % 3 === 1 ? '추천 2' : '추천 3');
 	}
 
-	function cardDetailActions(card: RecommendationCard): DetailAction[] {
-		const actions: DetailAction[] = [];
-		addUniqueAction(actions, {
-			key: 'route',
-			label: '코스 경로',
-			url: cardRouteMapUrl(card),
-			variant: 'primary'
-		});
-		addUniqueAction(actions, {
-			key: 'reservation',
-			label: '예약/상세',
-			url: cardReservationUrl(card),
-			variant: 'secondary'
-		});
-		const calendarUrl = cardCalendarUrl(card);
-		addUniqueAction(
-			actions,
-			calendarUrl
-				? {
-						key: 'calendar',
-						label: '일정 추가',
-						url: calendarUrl,
-						variant: 'secondary'
-					}
-				: null
-		);
-		return actions;
-	}
-
-	function itemRouteUrl(item: RecommendationItem) {
-		return kakaoRouteUrl(item.title, item.lat, item.lng);
-	}
-
-	function itemDetailActions(item: RecommendationItem): DetailAction[] {
-		const actions: DetailAction[] = [];
-		const detailUrl = reservationUrlForItem(item);
-		const routeUrl = itemRouteUrl(item);
-		const locationUrl = itemLocationUrl(item);
-		addUniqueAction(
-			actions,
-			routeUrl
-				? {
-						key: 'route',
-						label: '경로 보기',
-						url: routeUrl,
-						variant: 'primary'
-					}
-				: null
-		);
-		addUniqueAction(
-			actions,
-			locationUrl
-				? {
-						key: 'map',
-						label: '위치 보기',
-						url: locationUrl,
-						variant: routeUrl ? 'secondary' : 'primary'
-					}
-				: null
-		);
-		addUniqueAction(
-			actions,
-			detailUrl
-				? {
-						key: 'detail',
-						label: item.reservationUrl ? '예약/상세' : '상세 보기',
-						url: detailUrl,
-						variant: 'secondary'
-					}
-				: null
-		);
-		return actions;
+	function resultBadgeClass(index: number) {
+		return index % 3 === 0 ? '' : index % 3 === 1 ? 'b' : 'w';
 	}
 
 	function reservationUrlForItem(item: RecommendationItem) {
@@ -2892,53 +2769,8 @@
 		return `https://map.kakao.com/link/map/${encodeURIComponent(title)},${lat},${lng}`;
 	}
 
-	function kakaoRouteUrl(title: string, lat?: number, lng?: number) {
-		if (lat == null || lng == null) return '';
-		return `https://map.kakao.com/link/to/${encodeURIComponent(title)},${lat},${lng}`;
-	}
-
 	function kakaoSearchUrl(query: string) {
 		return `https://map.kakao.com/link/search/${encodeURIComponent(query)}`;
-	}
-
-	function kakaoRouteDeepLink(url: string | undefined) {
-		if (!url) return '';
-		try {
-			const parsed = new URL(url);
-			if (parsed.hostname !== 'map.kakao.com') return '';
-			return parsed.pathname.startsWith('/link/to/') ? url : '';
-		} catch {
-			return '';
-		}
-	}
-
-	function calendarDateValue(value: string | undefined) {
-		const date = parseDatetimeLocalValue(value ?? '');
-		if (!date) return '';
-		return date
-			.toISOString()
-			.replace(/[-:]/g, '')
-			.replace(/\.\d{3}/, '');
-	}
-
-	function cardCalendarUrl(card: RecommendationCard) {
-		if (card.calendarUrl) return card.calendarUrl;
-		const start = calendarDateValue(session.startDateTime);
-		const end = calendarDateValue(session.endDateTime);
-		if (!start || !end) return '';
-		const locationItem = card.items.find((item) => item.address) ?? card.items[0];
-		const url = new URL('https://calendar.google.com/calendar/render');
-		url.searchParams.set('action', 'TEMPLATE');
-		url.searchParams.set('text', card.title);
-		url.searchParams.set('dates', `${start}/${end}`);
-		url.searchParams.set(
-			'details',
-			[card.reason, card.routeDetail ?? card.routeSummary, ...card.items.map((item) => item.title)]
-				.filter(Boolean)
-				.join('\n')
-		);
-		url.searchParams.set('location', locationItem?.address ?? locationItem?.title ?? '');
-		return url.toString();
 	}
 </script>
 
@@ -2978,159 +2810,26 @@
 	</div>
 {/snippet}
 
-{#snippet recommendationDetail(card: RecommendationCard)}
-	<article class="rec-card recommendation-detail" aria-live="polite">
-		<div class="rec-topline">
-			<span class="label-chip">상세 계획</span>
-			<span>{resultTypeLabel(card)}</span>
-		</div>
-		<h2>{card.title}</h2>
-
-		<div class="detail-visual-grid">
-			{#each detailVisuals(card) as visual (visual.key)}
-				<a
-					class={`detail-visual-card tone-${visual.tone}`}
-					href={visual.href}
-					target="_blank"
-					rel="external noreferrer"
-					onclick={() => recordClick(card.id)}
-				>
-					{#if visual.imageUrl}
-						<img src={visual.imageUrl} alt={`${visual.title} 사진`} loading="lazy" />
-					{:else}
-						<span class="detail-visual-placeholder" aria-hidden="true"
-							>{visual.title.slice(0, 2)}</span
-						>
-					{/if}
-					<span class="detail-visual-caption">
-						<small>{visual.subtitle}</small>
-						<strong>{visual.title}</strong>
-					</span>
-				</a>
-			{/each}
-		</div>
-
-		<p class="why">{card.reason}</p>
-
-		<div class="detail-facts" aria-label="추천 요약">
-			{#each detailFacts(card) as fact (fact.key)}
-				<div>
-					<span>{fact.label}</span>
-					<strong>{fact.value}</strong>
+{#snippet cssMascot(state: string, size: number, pa: string, pb: string)}
+	<div class={`sai sai--${state}`} style={`--sai:${size}px;--pa:${pa};--pb:${pb}`}>
+		<div class="sai-rings"><i></i><i></i></div>
+		<div class="sai-antenna"><b></b></div>
+		<div class="sai-body">
+			<div class="sai-gloss"></div>
+			<div class="sai-face">
+				<div class="sai-eyes">
+					<span class="eye"><i></i></span>
+					<span class="eye"><i></i></span>
 				</div>
-			{/each}
-		</div>
-
-		<div class="budget-note">{card.budgetText}</div>
-
-		<div class="execution-actions detail-primary-actions">
-			{#each cardDetailActions(card) as action (action.key)}
-				<a
-					class={`${action.variant} link-button`}
-					href={action.url}
-					target="_blank"
-					rel="external noreferrer"
-					onclick={() => recordClick(card.id)}>{action.label}</a
-				>
-			{/each}
-		</div>
-
-		<div class="route-map-panel">
-			{#if routeMapEmbedUrl(card)}
-				<iframe
-					class="route-map-frame"
-					title={`${card.title} 지도`}
-					src={routeMapEmbedUrl(card)}
-					loading="lazy"
-				></iframe>
-			{:else}
-				<div class="route-map-fallback">
-					<strong>{transportModeLabel(card.routeTransport)}</strong>
-					<span>각 장소 버튼에서 위치와 경로를 바로 확인할 수 있어.</span>
-				</div>
-			{/if}
-			<div class="route-summary-row">
-				<span>{transportModeLabel(card.routeTransport)}</span>
-				<strong>{card.routeDetail ?? card.routeSummary}</strong>
+				<div class="sai-cheek l"></div>
+				<div class="sai-cheek r"></div>
+				<div class="sai-mouth"></div>
 			</div>
 		</div>
-
-		<div class="course-items">
-			{#each uniqueRecommendationItems(card) as item, itemIndex (`${item.slot}-${item.title}-${item.address ?? itemIndex}`)}
-				<div class="course-item has-thumb">
-					{#if item.thumbnailUrl}
-						<img
-							class="course-thumb"
-							src={item.thumbnailUrl}
-							alt={`${item.title} 사진`}
-							loading="lazy"
-						/>
-					{:else}
-						<div
-							class={`course-thumb course-thumb-fallback tone-${(itemIndex % 4) + 1}`}
-							aria-hidden="true"
-						>
-							{item.title.slice(0, 2)}
-						</div>
-					{/if}
-					<div class="course-item-main">
-						<span>{sourceLabel(item)}</span>
-						<strong>{item.title}</strong>
-						{#if compactItemMeta(item)}
-							<small>{compactItemMeta(item)}</small>
-						{/if}
-					</div>
-					{#if item.price > 0}
-						<em>{formatKrw(item.price)}</em>
-					{/if}
-					<div class="item-actions">
-						{#each itemDetailActions(item) as action (action.key)}
-							<a
-								class={action.variant}
-								href={action.url}
-								target="_blank"
-								rel="external noreferrer"
-								onclick={() => recordClick(card.id)}>{action.label}</a
-							>
-						{/each}
-					</div>
-				</div>
-			{/each}
-		</div>
-
-		<div class="badge-row">
-			{#each detailBadgeList(card) as badge (badge)}
-				<span>{badge}</span>
-			{/each}
-		</div>
-
-		<div class="feedback-bar">
-			<button
-				class={feedbackDraft[card.id]?.sentiment === 'like' ? 'active' : ''}
-				type="button"
-				onclick={() => setFeedback(card.id, 'like')}>좋아요</button
-			>
-			<button
-				class={feedbackDraft[card.id]?.sentiment === 'dislike' ? 'active' : ''}
-				type="button"
-				onclick={() => setFeedback(card.id, 'dislike')}>별로예요</button
-			>
-		</div>
-
-		{#if feedbackDraft[card.id]?.sentiment}
-			<div class="reason-chips">
-				{#each feedbackDraft[card.id]?.sentiment === 'like' ? likeReasons : dislikeReasons as reason (reason)}
-					<button
-						class={feedbackDraft[card.id]?.reasons.includes(reason) ? 'active' : ''}
-						type="button"
-						onclick={() => toggleFeedbackReason(card.id, reason)}
-					>
-						{reason}
-					</button>
-				{/each}
-			</div>
-		{/if}
-	</article>
+		<div class="sai-spark s1" aria-hidden="true">*</div>
+		<div class="sai-spark s2" aria-hidden="true">*</div>
+		<div class="sai-think" aria-hidden="true">...</div>
+	</div>
 {/snippet}
 
 <main class="app-frame">
@@ -3526,18 +3225,35 @@
 			</section>
 		{:else if screen === 'generating'}
 			<section class="screen generating-screen" aria-live="polite">
-				<div class={`mascot mascot-${mascotState}`}>
-					<img src={saiSymbol} alt="사이" />
+				<div class="stage-wrap" aria-label="AI 친구들 회의 중">
+					<div class="council-stage">
+						<div class="huddle-glow"></div>
+						{#each ['left', 'center', 'right'] as speaker (speaker)}
+							<div class={`cbubble b-${speaker} ${loadingLine.who === speaker ? 'show' : ''}`}>
+								{#if loadingLine.who === speaker}
+									{loadingLine.text}
+									{#if loadingLine.em}
+										<span class="em">{loadingLine.em}</span>
+									{/if}
+								{/if}
+							</div>
+						{/each}
+						<div class={loadingMascotClasses('left')}>
+							{@render cssMascot(loadingMascotState('left'), 96, '#FF6B5E', '#B45EE8')}
+						</div>
+						<div class={loadingMascotClasses('right')}>
+							{@render cssMascot(loadingMascotState('right'), 96, '#B45EE8', '#5B6CFF')}
+						</div>
+						<div class={loadingMascotClasses('center')}>
+							{@render cssMascot(loadingMascotState('center'), 118, '#FF6B5E', '#5B6CFF')}
+						</div>
+						<div class="huddle-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+					</div>
 				</div>
 				<div class="question-block">
-					<p class="eyebrow">API 후보 수집</p>
-					<h1>AI 친구들이 잠깐 회의 중이야</h1>
+					<p class="eyebrow loading-phase"><span class="pip"></span>{loadingPhase}</p>
+					<h1><b>AI</b> 친구들이<br />잠깐 회의 중이야</h1>
 					<p>날씨, 지도, 맛집, 액티비티 후보를 시간과 예산 안에서 맞춰보고 있어.</p>
-				</div>
-				<div class="loading-stack">
-					<span></span>
-					<span></span>
-					<span></span>
 				</div>
 			</section>
 		{:else if screen === 'results'}
@@ -3551,40 +3267,63 @@
 						<h1>이 3개로 추렸어</h1>
 					</div>
 				</div>
+				<div class="hostdock">
+					<div class="mascot mascot-happy result-mascot">
+						<img src={saiSymbol} alt="사이" />
+					</div>
+					<div class="said">
+						<span class="nm">사이</span>
+						{recommendations.length === 3
+							? '지금 조건에서 바로 실행하기 좋은 3개만 남겼어.'
+							: '조건에 맞는 후보를 추려봤어.'}
+					</div>
+				</div>
+
+				<div
+					class={`budget ${recommendationBudgetOver ? 'over' : ''}`}
+					aria-label={`추천 합계 ${formatKrw(recommendationTotalCost)}, 예산 ${formatKrw(recommendationBudgetLimit)}`}
+				>
+					<div class="bl">
+						<span>예산 합계</span>
+						<span
+							><b>{formatKrw(recommendationTotalCost)}</b> / {formatKrw(
+								recommendationBudgetLimit
+							)}</span
+						>
+					</div>
+					<div class="meter" aria-hidden="true">
+						<i style:width={recommendationBudgetPercent}></i>
+					</div>
+				</div>
 
 				<div class="recommendation-list card-picker" aria-label="추천 카드 목록">
 					{#each recommendations as card, index (card.id)}
+						{@const visual = summaryVisual(card)}
 						<button
-							class="rec-card summary-card"
+							class="course in"
 							type="button"
 							style={`--delay:${index * 60}ms`}
 							aria-label={`${card.title} 상세 보기`}
 							onclick={() => openRecommendationDetail(card.id)}
 						>
-							<div class="rec-topline">
-								<span class="label-chip">{card.label}</span>
-								<span>{resultTypeLabel(card)}</span>
+							<div class={`ph tone-${visual?.tone ?? (index % 4) + 1}`}>
+								{#if visual?.imageUrl}
+									<img src={visual.imageUrl} alt={`${visual.title} 사진`} loading="lazy" />
+								{:else}
+									<span aria-hidden="true">{card.title.slice(0, 2)}</span>
+								{/if}
 							</div>
-							<h2>{card.title}</h2>
-							<p class="card-summary">{card.reason}</p>
-							<div class="summary-metrics">
-								<div>
-									<span>시간</span>
-									<strong>{card.estimatedDuration}</strong>
+
+							<div class="ci">
+								<span class="price">{formatKrw(card.estimatedCost)}</span>
+								<div class={`slot-l ${resultSlotClass(index)}`}>{resultSlotLabel(card, index)}</div>
+								<div class="nm">{card.title}</div>
+								<div class="meta">
+									{#each card.badges.slice(0, 3) as badge, badgeIndex (badge)}
+										<span class={`badge ${resultBadgeClass(badgeIndex)}`}>{badge}</span>
+									{/each}
 								</div>
-								<div>
-									<span>비용</span>
-									<strong>{formatKrw(card.estimatedCost)}</strong>
-								</div>
-								<div>
-									<span>이동</span>
-									<strong>{card.routeSummary}</strong>
-								</div>
-							</div>
-							<div class="badge-row compact-badges">
-								{#each card.badges.slice(0, 3) as badge (badge)}
-									<span>{badge}</span>
-								{/each}
+								<div class="deeplink-row">탭하면 예약 페이지로 →</div>
 							</div>
 						</button>
 					{/each}
@@ -3595,24 +3334,33 @@
 					<button class="primary" type="button" onclick={startRecommendation}>다시 추천</button>
 				</div>
 			</section>
-		{:else if screen === 'resultDetail'}
-			<section class="screen results-screen detail-screen">
-				<div class="detail-nav">
-					<button class="secondary small" type="button" onclick={backToResults}>목록</button>
-					<button class="secondary small" type="button" onclick={startRecommendation}
-						>다시 추천</button
-					>
-				</div>
+		{/if}
 
-				{#if selectedRecommendation}
-					{@render recommendationDetail(selectedRecommendation)}
-				{:else}
-					<div class="rec-card recommendation-detail empty-detail">
-						<h2>선택한 추천을 찾을 수 없어.</h2>
-						<button class="primary" type="button" onclick={backToResults}>목록으로</button>
-					</div>
-				{/if}
-			</section>
+		{#if externalSheet}
+			<div class="external-sheet open">
+				<button
+					class="sheet-backdrop"
+					type="button"
+					aria-label="외부 이동 시트 닫기"
+					onclick={closeExternalSheet}
+				></button>
+				<div class="panel">
+					<div class="grab"></div>
+					<div class="ext">{externalSheet.provider}으로 이동</div>
+					<h3>{externalSheet.title}</h3>
+					<p>{externalSheet.description} 로그인·결제는 외부에서 진행돼.</p>
+					<a
+						class="primary link-button"
+						href={externalSheet.url}
+						target="_blank"
+						rel="external noreferrer"
+						onclick={() => {
+							closeExternalSheet();
+						}}>예약 페이지 열기</a
+					>
+					<button class="secondary" type="button" onclick={closeExternalSheet}>닫기</button>
+				</div>
+			</div>
 		{/if}
 	</section>
 </main>
@@ -3672,6 +3420,7 @@
 	}
 
 	.phone-shell {
+		position: relative;
 		width: min(100%, 430px);
 		height: 100dvh;
 		min-height: 100dvh;
@@ -4323,18 +4072,11 @@
 		line-height: 1.3;
 	}
 
-	.summary-metrics span,
 	.course-items span,
 	.rec-topline span {
 		color: var(--faint);
 		font-size: 11px;
 		font-weight: 900;
-	}
-
-	.summary-metrics strong {
-		color: var(--ink);
-		font-size: 14px;
-		line-height: 1.35;
 	}
 
 	.loading-stack {
@@ -4350,11 +4092,524 @@
 		animation: shimmer 1.2s linear infinite;
 	}
 
+	.stage-wrap {
+		margin-top: 0;
+	}
+
+	.sai {
+		--sai: 140px;
+		--pa: #ff6b5e;
+		--pb: #5b6cff;
+		position: relative;
+		display: flex;
+		width: var(--sai);
+		height: var(--sai);
+		flex: 0 0 var(--sai);
+		align-items: center;
+		justify-content: center;
+		font-family: var(--pret);
+	}
+
+	.sai-body {
+		position: relative;
+		width: 78%;
+		height: 84%;
+		border-radius: 50% 50% 47% 47% / 56% 56% 44% 44%;
+		background:
+			radial-gradient(120% 90% at 30% 22%, rgba(255, 255, 255, 0.55), transparent 42%),
+			linear-gradient(125deg, var(--pa) 8%, #b45ee8 52%, var(--pb) 95%);
+		animation: sai-bob 3.4s ease-in-out infinite;
+		box-shadow:
+			0 16px 34px rgba(120, 90, 200, 0.3),
+			inset 0 -10px 18px rgba(70, 40, 120, 0.22),
+			inset 0 8px 14px rgba(255, 255, 255, 0.18);
+		transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+	}
+
+	.sai-gloss {
+		position: absolute;
+		top: 11%;
+		left: 16%;
+		width: 34%;
+		height: 26%;
+		border-radius: 50%;
+		background: radial-gradient(circle at 40% 40%, rgba(255, 255, 255, 0.85), transparent 70%);
+		pointer-events: none;
+	}
+
+	.sai-face {
+		position: absolute;
+		inset: 0;
+	}
+
+	.sai-eyes {
+		position: absolute;
+		top: 38%;
+		right: 0;
+		left: 0;
+		display: flex;
+		justify-content: center;
+		gap: 16%;
+		transition: transform 0.45s ease;
+	}
+
+	.sai-eyes .eye {
+		position: relative;
+		width: 17%;
+		border-radius: 50%;
+		aspect-ratio: 1 / 1.15;
+		background: #2a2140;
+		animation: sai-blink 4.6s infinite;
+		transform-origin: center;
+	}
+
+	.sai-eyes .eye i {
+		position: absolute;
+		top: 18%;
+		left: 22%;
+		width: 34%;
+		height: 34%;
+		border-radius: 50%;
+		background: #fff;
+	}
+
+	.sai-cheek {
+		position: absolute;
+		top: 52%;
+		width: 13%;
+		border-radius: 50%;
+		aspect-ratio: 1;
+		background: rgba(255, 140, 160, 0.5);
+		filter: blur(1px);
+	}
+
+	.sai-cheek.l {
+		left: 18%;
+	}
+
+	.sai-cheek.r {
+		right: 18%;
+	}
+
+	.sai-mouth {
+		position: absolute;
+		top: 60%;
+		left: 50%;
+		width: 20%;
+		height: 11%;
+		border: 3px solid #2a2140;
+		border-top: none;
+		border-radius: 0 0 60px 60px;
+		transition: all 0.3s ease;
+		transform: translateX(-50%);
+	}
+
+	.sai-antenna {
+		position: absolute;
+		top: 2%;
+		left: 50%;
+		width: 3px;
+		height: 16%;
+		border-radius: 3px;
+		background: #b45ee8;
+		transform: translateX(-50%);
+		transform-origin: bottom center;
+	}
+
+	.sai-antenna b {
+		position: absolute;
+		top: -8px;
+		left: 50%;
+		width: 13px;
+		height: 13px;
+		border-radius: 50%;
+		background: radial-gradient(circle at 35% 35%, #fff, var(--pb));
+		box-shadow: 0 0 0 0 rgba(91, 108, 255, 0.5);
+		transform: translateX(-50%);
+	}
+
+	.sai-rings {
+		position: absolute;
+		inset: 0;
+		display: none;
+	}
+
+	.sai-rings i {
+		position: absolute;
+		inset: 4%;
+		border: 2px solid rgba(91, 108, 255, 0.4);
+		border-radius: 50%;
+		animation: sai-ring 2s ease-out infinite;
+	}
+
+	.sai-rings i:nth-child(2) {
+		border-color: rgba(255, 107, 94, 0.4);
+		animation-delay: 1s;
+	}
+
+	.sai-spark {
+		position: absolute;
+		color: #ffc861;
+		font-size: calc(var(--sai) * 0.13);
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.sai-spark.s1 {
+		top: 4%;
+		right: 10%;
+	}
+
+	.sai-spark.s2 {
+		bottom: 14%;
+		left: 6%;
+		font-size: calc(var(--sai) * 0.1);
+	}
+
+	.sai-think {
+		position: absolute;
+		top: -6%;
+		right: -2%;
+		border-radius: 14px;
+		background: #fff;
+		color: #9a6bd8;
+		padding: 4px 10px;
+		font-size: calc(var(--sai) * 0.12);
+		font-weight: 800;
+		letter-spacing: 2px;
+		opacity: 0;
+		box-shadow: 0 6px 16px rgba(120, 90, 200, 0.2);
+		transform: scale(0.6);
+		transform-origin: bottom left;
+	}
+
+	.sai--thinking .sai-body {
+		animation: sai-tilt 2.4s ease-in-out infinite;
+	}
+
+	.sai--thinking .sai-eyes {
+		top: 33%;
+	}
+
+	.sai--thinking .sai-think {
+		opacity: 1;
+		animation: sai-pop 1.4s ease-in-out infinite;
+		transform: scale(1);
+	}
+
+	.sai--thinking .sai-mouth {
+		width: 9%;
+		height: 6%;
+		border-radius: 40px;
+	}
+
+	.sai--talking .sai-mouth {
+		animation: sai-talk 0.42s ease-in-out infinite;
+	}
+
+	.sai--talking .sai-antenna b {
+		animation: sai-bead 1.4s ease-in-out infinite;
+	}
+
+	.council-stage {
+		position: relative;
+		width: 300px;
+		height: 230px;
+		margin: 0 auto;
+	}
+
+	.cm {
+		position: absolute;
+		transition: transform 0.5s cubic-bezier(0.34, 1.4, 0.5, 1);
+	}
+
+	.cm.center {
+		top: 4px;
+		left: 50%;
+		z-index: 3;
+		transform: translateX(-50%);
+	}
+
+	.cm.left {
+		top: 86px;
+		left: 8px;
+		z-index: 2;
+	}
+
+	.cm.right {
+		top: 86px;
+		right: 8px;
+		z-index: 2;
+	}
+
+	.cm.left .sai-body {
+		transform-origin: 60% 90%;
+	}
+
+	.cm.right .sai-body {
+		transform-origin: 40% 90%;
+	}
+
+	.cm.left.lean .sai-body {
+		animation: lean-r 3.2s ease-in-out infinite;
+	}
+
+	.cm.right.lean .sai-body {
+		animation: lean-l 3.2s ease-in-out infinite;
+	}
+
+	.cm.look-l .sai-eyes {
+		transform: translateX(-12%);
+	}
+
+	.cm.look-r .sai-eyes {
+		transform: translateX(12%);
+	}
+
+	.cm.speaking {
+		z-index: 5;
+	}
+
+	.cm.center.speaking {
+		transform: translateX(-50%) scale(1.06);
+	}
+
+	.cm.left.speaking,
+	.cm.right.speaking {
+		transform: scale(1.06);
+	}
+
+	.cm.nod .sai-body {
+		animation: nod 0.5s ease-in-out 2;
+	}
+
+	.cbubble {
+		position: absolute;
+		z-index: 8;
+		border-radius: 15px;
+		background: #fff;
+		color: #2c2638;
+		padding: 9px 13px;
+		font-size: 13.5px;
+		font-weight: 700;
+		line-height: 1.35;
+		white-space: nowrap;
+		opacity: 0;
+		pointer-events: none;
+		box-shadow: 0 8px 22px rgba(120, 90, 200, 0.18);
+		transform: scale(0.7) translateY(6px);
+		transform-origin: bottom center;
+		transition:
+			opacity 0.3s ease,
+			transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+	}
+
+	.cbubble.show {
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+
+	.cbubble::after {
+		position: absolute;
+		bottom: -5px;
+		width: 12px;
+		height: 12px;
+		border-radius: 2px;
+		background: #fff;
+		content: '';
+		transform: rotate(45deg);
+	}
+
+	.cbubble .em {
+		background: var(--brand);
+		background-clip: text;
+		color: transparent;
+	}
+
+	.cbubble.b-center {
+		top: -2px;
+		left: 50%;
+		transform: translateX(-50%) scale(0.7) translateY(6px);
+	}
+
+	.cbubble.b-center.show {
+		transform: translateX(-50%) scale(1) translateY(0);
+	}
+
+	.cbubble.b-center::after {
+		left: 50%;
+		margin-left: -6px;
+	}
+
+	.cbubble.b-left {
+		top: 64px;
+		left: 70px;
+	}
+
+	.cbubble.b-left::after {
+		left: 22px;
+	}
+
+	.cbubble.b-right {
+		top: 64px;
+		right: 70px;
+	}
+
+	.cbubble.b-right::after {
+		right: 22px;
+	}
+
+	.huddle-dots {
+		position: absolute;
+		top: 150px;
+		left: 50%;
+		z-index: 1;
+		display: flex;
+		gap: 5px;
+		transform: translateX(-50%);
+	}
+
+	.huddle-dots i {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--violet);
+		opacity: 0.35;
+		animation: huddle-dot 1.4s ease-in-out infinite;
+	}
+
+	.huddle-dots i:nth-child(2) {
+		animation-delay: 0.2s;
+	}
+
+	.huddle-dots i:nth-child(3) {
+		animation-delay: 0.4s;
+	}
+
+	.huddle-glow {
+		position: absolute;
+		top: 168px;
+		left: 50%;
+		z-index: 0;
+		width: 200px;
+		height: 46px;
+		border-radius: 50%;
+		background: radial-gradient(ellipse, rgba(180, 94, 232, 0.18), transparent 70%);
+		filter: blur(4px);
+		transform: translateX(-50%);
+	}
+
+	.loading-phase {
+		justify-content: center;
+		color: var(--violet);
+	}
+
+	.loading-phase span {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--violet);
+		animation: loading-pip 1s ease-in-out infinite;
+	}
+
+	.generating-screen .question-block {
+		text-align: center;
+	}
+
+	.generating-screen h1 b {
+		background: var(--brand);
+		background-clip: text;
+		color: transparent;
+	}
+
 	.results-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
+	}
+
+	.hostdock {
+		display: flex;
+		align-items: flex-end;
+		gap: 12px;
+	}
+
+	.result-mascot {
+		width: 78px;
+		height: 78px;
+		flex: 0 0 auto;
+	}
+
+	.said {
+		position: relative;
+		flex: 1;
+		border: 1px solid rgba(236, 231, 243, 0.92);
+		border-radius: 18px;
+		background: #fff;
+		padding: 11px 13px;
+		color: var(--ink2);
+		font-size: 13px;
+		font-weight: 800;
+		line-height: 1.45;
+		box-shadow: 0 8px 22px rgba(120, 110, 160, 0.1);
+	}
+
+	.said .nm {
+		display: block;
+		margin-bottom: 2px;
+		background: var(--brand);
+		background-clip: text;
+		color: transparent;
+		font-size: 12px;
+		font-weight: 900;
+	}
+
+	.budget {
+		border-radius: 20px;
+		background: var(--card);
+		padding: 13px 15px;
+		margin-top: 14px;
+		box-shadow: var(--soft);
+	}
+
+	.budget .bl {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 10px;
+		margin-bottom: 9px;
+		color: var(--muted);
+		font-size: 13px;
+		font-weight: 700;
+		white-space: nowrap;
+	}
+
+	.budget .bl b {
+		background: var(--brand);
+		background-clip: text;
+		color: transparent;
+		font-size: 16px;
+	}
+
+	.budget .meter {
+		overflow: hidden;
+		height: 11px;
+		border-radius: 999px;
+		background: #f0ecf8;
+	}
+
+	.budget .meter i {
+		display: block;
+		width: 0;
+		height: 100%;
+		border-radius: inherit;
+		background: var(--brand);
+		transition: width 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
+	}
+
+	.budget.over .meter i {
+		background: linear-gradient(90deg, #ff8a5e, #ff4d4d);
 	}
 
 	.recommendation-list {
@@ -4375,17 +4630,146 @@
 		gap: 10px;
 	}
 
-	.summary-card {
+	.course {
 		width: 100%;
-		border-color: rgba(236, 231, 243, 0.92);
-		color: inherit;
+		overflow: hidden;
+		border: 0;
+		border-radius: 20px;
+		background: var(--card);
+		color: var(--ink);
+		margin-top: 4px;
 		text-align: left;
 		cursor: pointer;
+		box-shadow: var(--soft);
+		opacity: 0;
+		transform: translateY(14px);
+		transition: transform 0.2s;
 	}
 
-	.summary-card:focus-visible {
+	.course.in {
+		animation: msgin 0.5s ease forwards;
+		animation-delay: var(--delay);
+	}
+
+	.course:active {
+		transform: scale(0.985);
+	}
+
+	.course:focus-visible {
 		outline: 3px solid rgba(91, 108, 255, 0.22);
 		outline-offset: 3px;
+	}
+
+	.course .ph {
+		display: grid;
+		place-items: center;
+		width: 100%;
+		height: 130px;
+		background:
+			linear-gradient(
+				135deg,
+				rgba(255, 107, 94, 0.95),
+				rgba(180, 94, 232, 0.88) 55%,
+				rgba(91, 108, 255, 0.95)
+			),
+			#f8f6fb;
+		color: rgba(255, 255, 255, 0.92);
+		font-size: 24px;
+		font-weight: 900;
+	}
+
+	.course .ph.tone-2 {
+		background: linear-gradient(135deg, #5b6cff, #6fcf97);
+	}
+
+	.course .ph.tone-3 {
+		background: linear-gradient(135deg, #ff6b5e, #f4b860);
+	}
+
+	.course .ph.tone-4 {
+		background: linear-gradient(135deg, #211c2b, #b45ee8);
+	}
+
+	.course .ph img {
+		width: 100%;
+		height: 130px;
+		object-fit: cover;
+	}
+
+	.course .ci {
+		padding: 14px 16px;
+	}
+
+	.course .price {
+		float: right;
+		color: var(--ink);
+		font-size: 16px;
+		font-weight: 800;
+	}
+
+	.course .slot-l {
+		color: var(--violet);
+		font-size: 11px;
+		font-weight: 800;
+		letter-spacing: 0.03em;
+	}
+
+	.course .slot-l.a {
+		color: var(--coral);
+	}
+
+	.course .slot-l.b {
+		color: var(--indigo);
+	}
+
+	.course .slot-l.s {
+		color: var(--violet);
+	}
+
+	.course .nm {
+		margin: 3px 0 9px;
+		color: var(--ink);
+		font-size: 17px;
+		font-weight: 800;
+		line-height: 1.28;
+		letter-spacing: 0;
+	}
+
+	.course .meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+
+	.badge {
+		border-radius: 999px;
+		background: rgba(255, 107, 94, 0.12);
+		color: var(--coral);
+		padding: 5px 10px;
+		font-size: 11px;
+		font-weight: 700;
+	}
+
+	.badge.b {
+		background: rgba(91, 108, 255, 0.12);
+		color: var(--indigo);
+	}
+
+	.badge.w {
+		background: rgba(180, 94, 232, 0.12);
+		color: var(--violet);
+	}
+
+	.summary-title-row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: 10px;
+		align-items: start;
+	}
+
+	.summary-title-row h2 {
+		min-width: 0;
+		line-height: 1.25;
 	}
 
 	.rec-topline {
@@ -4406,51 +4790,19 @@
 		font-size: 12px !important;
 	}
 
-	.card-summary {
-		display: -webkit-box;
-		overflow: hidden;
-		color: var(--ink2);
-		font-size: 13px;
-		line-height: 1.45;
-		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 2;
-		line-clamp: 2;
-	}
-
-	.summary-metrics {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 6px;
-	}
-
-	.summary-metrics div {
-		display: grid;
-		gap: 3px;
-		min-width: 0;
-		border-radius: 12px;
-		background: #faf8fc;
-		padding: 8px;
-	}
-
-	.summary-metrics strong {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	.deeplink-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 800;
+		margin-top: 10px;
 	}
 
 	.recommendation-detail {
 		gap: 16px;
 		margin-bottom: 18px;
-	}
-
-	.detail-screen {
-		gap: 12px;
-	}
-
-	.detail-nav {
-		display: grid;
-		grid-template-columns: 0.72fr 1fr;
-		gap: 10px;
 	}
 
 	.empty-detail {
@@ -4473,7 +4825,9 @@
 		border-radius: 18px;
 		background: #f8f6fb;
 		color: #fff;
+		padding: 0;
 		text-decoration: none;
+		cursor: pointer;
 	}
 
 	.detail-visual-card:first-child {
@@ -4532,17 +4886,10 @@
 		backdrop-filter: blur(10px);
 	}
 
-	.detail-visual-caption small,
 	.detail-visual-caption strong {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.detail-visual-caption small {
-		color: rgba(255, 255, 255, 0.72);
-		font-size: 11px;
-		font-weight: 900;
 	}
 
 	.detail-visual-caption strong {
@@ -4653,15 +5000,25 @@
 	}
 
 	.budget-note {
-		min-height: 36px;
-		display: flex;
-		align-items: center;
+		display: grid;
+		gap: 4px;
+		min-height: 48px;
+		align-content: center;
 		border-radius: 12px;
 		background: rgba(97, 176, 126, 0.12);
 		color: #28764e;
-		padding: 0 12px;
+		padding: 9px 12px;
 		font-size: 13px;
 		font-weight: 900;
+	}
+
+	.budget-note span {
+		font-size: 11px;
+	}
+
+	.budget-note strong {
+		font-size: 13px;
+		line-height: 1.35;
 	}
 
 	.course-items {
@@ -4710,21 +5067,6 @@
 		font-weight: 900;
 	}
 
-	.course-item-main small {
-		color: var(--ink2);
-		font-size: 12px;
-		font-weight: 800;
-		line-height: 1.35;
-	}
-
-	.course-item em {
-		color: var(--muted);
-		font-size: 12px;
-		font-style: normal;
-		font-weight: 900;
-		white-space: nowrap;
-	}
-
 	.item-actions,
 	.execution-actions {
 		display: flex;
@@ -4736,7 +5078,7 @@
 		grid-column: 1 / -1;
 	}
 
-	.item-actions a {
+	.item-actions button {
 		border: 1px solid var(--line);
 		border-radius: 999px;
 		background: #fff;
@@ -4745,9 +5087,10 @@
 		font-size: 12px;
 		font-weight: 900;
 		text-decoration: none;
+		cursor: pointer;
 	}
 
-	.item-actions a.primary {
+	.item-actions button.primary {
 		border-color: transparent;
 		background: linear-gradient(90deg, var(--coral), var(--violet) 55%, var(--indigo));
 		color: #fff;
@@ -4777,11 +5120,6 @@
 		font-weight: 900;
 	}
 
-	.compact-badges {
-		max-height: 30px;
-		overflow: hidden;
-	}
-
 	.rec-actions {
 		display: grid;
 	}
@@ -4794,11 +5132,15 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 8px;
-		padding-top: 4px;
+		border-radius: 18px;
+		background: #f8f5fb;
+		padding: 6px;
 	}
 
 	.feedback-bar button {
-		border-color: var(--line);
+		min-height: 44px;
+		border-color: transparent;
+		border-radius: 14px;
 		background: #fff;
 	}
 
@@ -4820,6 +5162,75 @@
 		background: #fff;
 		padding: 0 10px;
 		font-size: 12px;
+	}
+
+	.external-sheet {
+		position: absolute;
+		inset: 0;
+		z-index: 20;
+		display: flex;
+		align-items: flex-end;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.3s ease;
+	}
+
+	.sheet-backdrop {
+		position: absolute;
+		inset: 0;
+		border: 0;
+		background: rgba(33, 28, 43, 0.42);
+		backdrop-filter: blur(3px);
+	}
+
+	.external-sheet.open {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.external-sheet .panel {
+		position: relative;
+		z-index: 1;
+		display: grid;
+		gap: 12px;
+		width: 100%;
+		border-radius: 26px 26px 0 0;
+		background: #fff;
+		padding: 22px;
+		transform: translateY(100%);
+		transition: transform 0.36s cubic-bezier(0.2, 0.9, 0.2, 1);
+	}
+
+	.external-sheet.open .panel {
+		transform: none;
+	}
+
+	.external-sheet .grab {
+		width: 40px;
+		height: 4px;
+		border-radius: 4px;
+		background: #e3dcec;
+		margin: 0 auto 4px;
+	}
+
+	.external-sheet .ext {
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 900;
+		letter-spacing: 0.04em;
+	}
+
+	.external-sheet h3 {
+		color: var(--ink);
+		font-size: 20px;
+		line-height: 1.28;
+	}
+
+	.external-sheet p {
+		color: var(--muted);
+		font-size: 14px;
+		font-weight: 800;
+		line-height: 1.5;
 	}
 
 	.bottom-actions {
@@ -4921,6 +5332,134 @@
 		}
 	}
 
+	@keyframes loading-pip {
+		0%,
+		100% {
+			opacity: 0.3;
+		}
+		50% {
+			opacity: 1;
+		}
+	}
+
+	@keyframes huddle-dot {
+		0%,
+		100% {
+			opacity: 0.25;
+			transform: translateY(0);
+		}
+		50% {
+			opacity: 0.7;
+			transform: translateY(-5px);
+		}
+	}
+
+	@keyframes sai-bob {
+		0%,
+		100% {
+			transform: translateY(0) rotate(0);
+		}
+		50% {
+			transform: translateY(-5%) rotate(-1.2deg);
+		}
+	}
+
+	@keyframes sai-blink {
+		0%,
+		6%,
+		100% {
+			transform: scaleY(1);
+		}
+		3% {
+			transform: scaleY(0.1);
+		}
+	}
+
+	@keyframes sai-ring {
+		0% {
+			opacity: 0.9;
+			transform: scale(0.7);
+		}
+		100% {
+			opacity: 0;
+			transform: scale(1.35);
+		}
+	}
+
+	@keyframes sai-tilt {
+		0%,
+		100% {
+			transform: rotate(-3deg);
+		}
+		50% {
+			transform: rotate(3deg);
+		}
+	}
+
+	@keyframes sai-pop {
+		0%,
+		100% {
+			transform: scale(1);
+		}
+		50% {
+			transform: scale(1.12);
+		}
+	}
+
+	@keyframes sai-talk {
+		0%,
+		100% {
+			width: 18%;
+			height: 7%;
+			border-radius: 0 0 60px 60px;
+		}
+		50% {
+			width: 22%;
+			height: 15%;
+			border-radius: 0 0 40px 40px;
+		}
+	}
+
+	@keyframes sai-bead {
+		0%,
+		100% {
+			box-shadow: 0 0 0 0 rgba(91, 108, 255, 0.5);
+		}
+		50% {
+			box-shadow: 0 0 0 7px rgba(91, 108, 255, 0);
+		}
+	}
+
+	@keyframes lean-r {
+		0%,
+		100% {
+			transform: rotate(4deg) translateY(0);
+		}
+		50% {
+			transform: rotate(7deg) translateY(-3%);
+		}
+	}
+
+	@keyframes lean-l {
+		0%,
+		100% {
+			transform: rotate(-4deg) translateY(0);
+		}
+		50% {
+			transform: rotate(-7deg) translateY(-3%);
+		}
+	}
+
+	@keyframes nod {
+		0%,
+		100% {
+			transform: translateY(0);
+		}
+		50% {
+			transform: translateY(8%) rotate(0);
+		}
+	}
+
 	@keyframes fade-up {
 		from {
 			opacity: 0;
@@ -4929,6 +5468,13 @@
 		to {
 			opacity: 1;
 			transform: translateY(0);
+		}
+	}
+
+	@keyframes msgin {
+		to {
+			opacity: 1;
+			transform: none;
 		}
 	}
 
@@ -4974,10 +5520,6 @@
 
 		.course-item.has-thumb {
 			grid-template-columns: 56px minmax(0, 1fr);
-		}
-
-		.course-item.has-thumb em {
-			grid-column: 2;
 		}
 
 		.course-thumb {

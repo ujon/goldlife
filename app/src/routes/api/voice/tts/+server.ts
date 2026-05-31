@@ -63,7 +63,7 @@ export const POST: RequestHandler = async ({ request }) => {
 };
 
 async function readTtsRequestBody(request: Request) {
-	let raw = '';
+	let raw: string;
 	try {
 		raw = await request.text();
 	} catch {
