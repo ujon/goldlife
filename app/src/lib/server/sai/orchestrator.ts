@@ -56,9 +56,14 @@ export async function composeWithOrchestrator(
 	);
 	const fallbackCards = scopeCardsToSession(
 		applySessionGuards(
-			applyHistoryHints(
-				applyCandidateBundle(composeRecommendations(profile, session), candidates),
-				histories
+			applyOperatingStatusGuards(
+				applyTravelTimeGuards(
+					applyHistoryHints(
+						applyCandidateBundle(composeRecommendations(profile, session), candidates),
+						histories
+					),
+					session
+				)
 			),
 			session
 		),
@@ -216,7 +221,12 @@ async function requestOpenAICards(input: {
 									'후보 API 결과는 실행 링크와 검증 신호로 우선 사용한다. MyRealTrip 상품/옵션, API Fuse의 KakaoMap/NaverMap 장소와 경로, CatchTable 검색/예약가능성, Yogiyo 음식 후보, AirKorea 대기질, Modu Parking 주차 후보, Swing 이동 후보를 가능한 한 반영한다.',
 									'예약 URL은 후보에 있는 outboundUrl 또는 reservationUrl만 사용하고 새 URL을 지어내지 않는다.',
 									'routeSummary에는 후보 mobility가 있으면 이동수단과 예상 시간을 포함한다.',
-									'availabilityText, mapUrl, 좌표가 있는 후보를 더 실행 가능하다고 본다.',
+									'각 후보의 travelMinutes, travelTimeText를 보고 사용 가능 시간 안에서 이동 부담이 낮은 후보를 우선한다.',
+									'사용 가능 시간이 짧으면 이동시간이 긴 후보를 쓰지 말고, 총 코스 시간에 이동시간을 반드시 포함한다.',
+									'각 후보의 operatingStatus, arrivalTimeText, availabilityText를 보고 도착 예정 시간에 운영 중일 가능성을 우선한다.',
+									'operatingStatus가 closed_at_arrival인 후보는 다른 대안이 없을 때만 쓰고, 가능하면 open_at_arrival 후보를 먼저 선택한다.',
+									'operatingStatus가 unknown이면 운영 확인 필요를 배지나 이유에 표시한다.',
+									'availabilityText, mapUrl, 좌표, 도착 시간 운영 확인이 있는 후보를 더 실행 가능하다고 본다.',
 									'카드의 첫 문장은 왜 이 추천이 맞는지여야 한다.',
 									'모든 가격은 원화 숫자이며 총 예산 기준으로 맞춘다.',
 									'outboundUrl은 후보에 있는 URL만 사용하고 없으면 https://map.kakao.com 을 사용한다.'
@@ -269,7 +279,14 @@ async function requestOpenAICards(input: {
 	}
 
 	return applySessionGuards(
-		cards.map((card, index) => normalizeCard(card, input.fallbackCards[index], input.sessionId)),
+		applyOperatingStatusGuards(
+			applyTravelTimeGuards(
+				cards.map((card, index) =>
+					normalizeCard(card, input.fallbackCards[index], input.sessionId)
+				),
+				input.session
+			)
+		),
 		input.session
 	);
 }
@@ -300,6 +317,13 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 					lat: activity.lat ?? item.lat,
 					lng: activity.lng ?? item.lng,
 					availabilityText: activity.availabilityText ?? item.availabilityText,
+					travelMinutes: activity.travelMinutes ?? item.travelMinutes,
+					travelTimeText: activity.travelTimeText ?? item.travelTimeText,
+					travelDistanceMeters: activity.travelDistanceMeters ?? item.travelDistanceMeters,
+					routeMapUrl: activity.routeMapUrl ?? item.routeMapUrl,
+					operatingStatus: activity.operatingStatus ?? item.operatingStatus,
+					arrivalTimeText: activity.arrivalTimeText ?? item.arrivalTimeText,
+					openingHoursText: activity.openingHoursText ?? item.openingHoursText,
 					thumbnailUrl: activity.thumbnailUrl ?? item.thumbnailUrl
 				};
 			}
@@ -318,6 +342,13 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 					lat: restaurant.lat ?? item.lat,
 					lng: restaurant.lng ?? item.lng,
 					availabilityText: restaurant.availabilityText ?? item.availabilityText,
+					travelMinutes: restaurant.travelMinutes ?? item.travelMinutes,
+					travelTimeText: restaurant.travelTimeText ?? item.travelTimeText,
+					travelDistanceMeters: restaurant.travelDistanceMeters ?? item.travelDistanceMeters,
+					routeMapUrl: restaurant.routeMapUrl ?? item.routeMapUrl,
+					operatingStatus: restaurant.operatingStatus ?? item.operatingStatus,
+					arrivalTimeText: restaurant.arrivalTimeText ?? item.arrivalTimeText,
+					openingHoursText: restaurant.openingHoursText ?? item.openingHoursText,
 					thumbnailUrl: restaurant.thumbnailUrl ?? item.thumbnailUrl
 				};
 			}
@@ -332,7 +363,10 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 		const reservationUrl =
 			items.find((item) => item.reservationUrl)?.reservationUrl ?? card.reservationUrl;
 		const routeMapUrl =
-			mobility?.routeMapUrl ?? items.find((item) => item.mapUrl)?.mapUrl ?? card.routeMapUrl;
+			mobility?.routeMapUrl ??
+			items.find((item) => item.routeMapUrl)?.routeMapUrl ??
+			items.find((item) => item.mapUrl)?.mapUrl ??
+			card.routeMapUrl;
 
 		return {
 			...card,
@@ -347,6 +381,121 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 			outboundUrl: reservationUrl ?? routeMapUrl ?? card.outboundUrl
 		};
 	});
+}
+
+function applyTravelTimeGuards(cards: RecommendationCard[], session: RecommendationSession) {
+	const maxItemTravelMinutes = maxTravelMinutes(session);
+	const sessionMinutes = availableMinutes(session);
+	return cards.map((card) => {
+		if (!card.items.length) return card;
+		const itemsWithTravel = card.items.filter((item) => item.travelMinutes != null);
+		if (!itemsWithTravel.length) return card;
+
+		const nearbyItems = card.items.filter(
+			(item) => item.travelMinutes == null || item.travelMinutes <= maxItemTravelMinutes
+		);
+		const removedFarCount = card.items.length - nearbyItems.length;
+		const items = nearbyItems.length ? nearbyItems : [shortestTravelItem(card.items)];
+		const totalTravelMinutes = Math.round(
+			items.reduce((sum, item) => sum + (item.travelMinutes ?? 0), 0)
+		);
+		const travelTooHeavy =
+			sessionMinutes != null &&
+			totalTravelMinutes > Math.max(20, Math.floor(sessionMinutes * 0.45));
+		const travelBadges = [
+			totalTravelMinutes > 0 ? `이동 약 ${formatDuration(totalTravelMinutes)}` : '',
+			removedFarCount > 0 ? '먼 이동 제외' : '',
+			travelTooHeavy ? '이동시간 주의' : '근거리 우선'
+		].filter(Boolean);
+		const routeSummary = totalTravelMinutes
+			? appendSummary(card.routeSummary, `이동 약 ${formatDuration(totalTravelMinutes)}`)
+			: card.routeSummary;
+		const routeDetail = totalTravelMinutes
+			? appendSummary(
+					card.routeDetail ?? card.routeSummary,
+					travelDetailText(items, totalTravelMinutes)
+				)
+			: card.routeDetail;
+		const reasonSuffix = removedFarCount
+			? '사용 가능한 시간에 비해 이동이 긴 후보는 제외했어.'
+			: totalTravelMinutes
+				? '이동시간까지 같이 계산해서 가까운 후보를 우선했어.'
+				: '';
+
+		return {
+			...card,
+			items,
+			reason: reasonSuffix ? `${card.reason} ${reasonSuffix}` : card.reason,
+			routeSummary,
+			routeDetail,
+			badges: [...new Set([...travelBadges, ...card.badges])].slice(0, 8)
+		};
+	});
+}
+
+function shortestTravelItem(items: RecommendationItem[]) {
+	return (
+		[...items].sort(
+			(a, b) =>
+				(a.travelMinutes ?? Number.MAX_SAFE_INTEGER) - (b.travelMinutes ?? Number.MAX_SAFE_INTEGER)
+		)[0] ?? items[0]
+	);
+}
+
+function travelDetailText(items: RecommendationItem[], totalTravelMinutes: number) {
+	const itemDetails = items
+		.filter((item) => item.travelTimeText)
+		.map((item) => `${item.title} ${item.travelTimeText}`)
+		.slice(0, 2)
+		.join(', ');
+	return itemDetails || `이동시간 합계 약 ${formatDuration(totalTravelMinutes)}`;
+}
+
+function appendSummary(summary: string, addition: string) {
+	if (summary.includes(addition)) return summary;
+	return `${summary} · ${addition}`;
+}
+
+function applyOperatingStatusGuards(cards: RecommendationCard[]) {
+	return cards.map((card) => {
+		const openItems = card.items.filter((item) => item.operatingStatus === 'open_at_arrival');
+		const nonClosedItems = card.items.filter(
+			(item) => item.operatingStatus !== 'closed_at_arrival'
+		);
+		const removedClosedCount = card.items.length - nonClosedItems.length;
+		const items = nonClosedItems.length ? nonClosedItems : card.items;
+		const statusBadges = operatingStatusBadges(items, removedClosedCount);
+		const hasOpenSignal = openItems.length > 0;
+		const hasUnknownSignal = items.some((item) => item.operatingStatus === 'unknown');
+		const reasonSuffix = hasOpenSignal
+			? '도착 예정 시간에 운영 가능한 후보를 우선으로 봤어.'
+			: hasUnknownSignal
+				? '운영 시간이 확실하지 않은 곳은 확인 필요로 표시했어.'
+				: removedClosedCount
+					? '도착 예정 시간에 닫힐 가능성이 있는 후보는 제외했어.'
+					: '';
+
+		return {
+			...card,
+			items,
+			reason: reasonSuffix ? `${card.reason} ${reasonSuffix}` : card.reason,
+			badges: [...new Set([...statusBadges, ...card.badges])].slice(0, 8)
+		};
+	});
+}
+
+function operatingStatusBadges(items: RecommendationItem[], removedClosedCount: number) {
+	const badges: string[] = [];
+	if (items.some((item) => item.operatingStatus === 'open_at_arrival')) {
+		badges.push('도착시간 운영 확인');
+	}
+	if (items.some((item) => item.operatingStatus === 'unknown')) {
+		badges.push('운영시간 확인 필요');
+	}
+	if (removedClosedCount > 0) {
+		badges.push('영업 종료 후보 제외');
+	}
+	return badges;
 }
 
 function applySessionGuards(cards: RecommendationCard[], session: RecommendationSession) {
@@ -451,6 +600,15 @@ function availableMinutes(session: RecommendationSession) {
 	if (session.availableTime === 'two_three') return 180;
 	if (session.availableTime === 'half_day') return 300;
 	return undefined;
+}
+
+function maxTravelMinutes(session: RecommendationSession) {
+	const explicitWindow = availableMinutes(session);
+	if (explicitWindow) return Math.max(15, Math.min(75, Math.floor(explicitWindow * 0.35)));
+	if (session.availableTime === 'one_hour') return 25;
+	if (session.availableTime === 'two_three') return 45;
+	if (session.availableTime === 'half_day') return 60;
+	return 90;
 }
 
 function parseDurationMinutes(duration: string) {
@@ -616,6 +774,13 @@ function mergeItemExecutionData(items: RecommendationItem[], fallbackItems: Reco
 			lat: item.lat ?? fallback.lat,
 			lng: item.lng ?? fallback.lng,
 			availabilityText: item.availabilityText ?? fallback.availabilityText,
+			travelMinutes: item.travelMinutes ?? fallback.travelMinutes,
+			travelTimeText: item.travelTimeText ?? fallback.travelTimeText,
+			travelDistanceMeters: item.travelDistanceMeters ?? fallback.travelDistanceMeters,
+			routeMapUrl: item.routeMapUrl ?? fallback.routeMapUrl,
+			operatingStatus: item.operatingStatus ?? fallback.operatingStatus,
+			arrivalTimeText: item.arrivalTimeText ?? fallback.arrivalTimeText,
+			openingHoursText: item.openingHoursText ?? fallback.openingHoursText,
 			thumbnailUrl: item.thumbnailUrl ?? fallback.thumbnailUrl
 		};
 	});

@@ -24,6 +24,8 @@ export type ProviderStatus = {
 	fallbackReason?: string;
 };
 
+export type OperatingStatus = 'open_at_arrival' | 'closed_at_arrival' | 'unknown';
+
 export type ActivityCandidate = {
 	id: string;
 	title: string;
@@ -36,6 +38,13 @@ export type ActivityCandidate = {
 	lat?: number;
 	lng?: number;
 	availabilityText?: string;
+	travelMinutes?: number;
+	travelTimeText?: string;
+	travelDistanceMeters?: number;
+	routeMapUrl?: string;
+	operatingStatus?: OperatingStatus;
+	arrivalTimeText?: string;
+	openingHoursText?: string;
 	thumbnailUrl?: string;
 	tags: string[];
 	score?: number;
@@ -53,6 +62,13 @@ export type RestaurantCandidate = {
 	lat?: number;
 	lng?: number;
 	availabilityText?: string;
+	travelMinutes?: number;
+	travelTimeText?: string;
+	travelDistanceMeters?: number;
+	routeMapUrl?: string;
+	operatingStatus?: OperatingStatus;
+	arrivalTimeText?: string;
+	openingHoursText?: string;
 	thumbnailUrl?: string;
 	tags: string[];
 	reservationHint?: string;

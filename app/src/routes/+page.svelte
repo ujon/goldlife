@@ -1305,6 +1305,13 @@
 						lat: activity.lat ?? item.lat,
 						lng: activity.lng ?? item.lng,
 						availabilityText: activity.availabilityText ?? item.availabilityText,
+						travelMinutes: activity.travelMinutes ?? item.travelMinutes,
+						travelTimeText: activity.travelTimeText ?? item.travelTimeText,
+						travelDistanceMeters: activity.travelDistanceMeters ?? item.travelDistanceMeters,
+						routeMapUrl: activity.routeMapUrl ?? item.routeMapUrl,
+						operatingStatus: activity.operatingStatus ?? item.operatingStatus,
+						arrivalTimeText: activity.arrivalTimeText ?? item.arrivalTimeText,
+						openingHoursText: activity.openingHoursText ?? item.openingHoursText,
 						thumbnailUrl: activity.thumbnailUrl ?? item.thumbnailUrl
 					};
 				}
@@ -1323,6 +1330,13 @@
 						lat: restaurant.lat ?? item.lat,
 						lng: restaurant.lng ?? item.lng,
 						availabilityText: restaurant.availabilityText ?? item.availabilityText,
+						travelMinutes: restaurant.travelMinutes ?? item.travelMinutes,
+						travelTimeText: restaurant.travelTimeText ?? item.travelTimeText,
+						travelDistanceMeters: restaurant.travelDistanceMeters ?? item.travelDistanceMeters,
+						routeMapUrl: restaurant.routeMapUrl ?? item.routeMapUrl,
+						operatingStatus: restaurant.operatingStatus ?? item.operatingStatus,
+						arrivalTimeText: restaurant.arrivalTimeText ?? item.arrivalTimeText,
+						openingHoursText: restaurant.openingHoursText ?? item.openingHoursText,
 						thumbnailUrl: restaurant.thumbnailUrl ?? item.thumbnailUrl
 					};
 				}
@@ -1337,7 +1351,10 @@
 			const reservationUrl =
 				items.find((item) => item.reservationUrl)?.reservationUrl ?? card.reservationUrl;
 			const routeMapUrl =
-				mobility?.routeMapUrl ?? items.find((item) => item.mapUrl)?.mapUrl ?? card.routeMapUrl;
+				mobility?.routeMapUrl ??
+				items.find((item) => item.routeMapUrl)?.routeMapUrl ??
+				items.find((item) => item.mapUrl)?.mapUrl ??
+				card.routeMapUrl;
 
 			return {
 				...card,
@@ -2094,7 +2111,7 @@
 
 	function cardRouteMapUrl(card: RecommendationCard) {
 		const item = mappableItems(card)[0];
-		if (item) return kakaoRouteUrl(item.title, item.lat, item.lng);
+		if (item) return item.routeMapUrl ?? kakaoRouteUrl(item.title, item.lat, item.lng);
 		return kakaoRouteDeepLink(card.routeMapUrl);
 	}
 
@@ -2127,7 +2144,13 @@
 	}
 
 	function compactItemMeta(item: RecommendationItem) {
-		return uniqueText([item.availabilityText, item.address]).join(' · ');
+		return uniqueText([
+			item.travelTimeText,
+			item.arrivalTimeText,
+			item.availabilityText,
+			item.openingHoursText,
+			item.address
+		]).join(' · ');
 	}
 
 	function uniqueRecommendationItems(card: RecommendationCard) {
@@ -2271,6 +2294,7 @@
 	}
 
 	function itemLocationUrl(item: RecommendationItem) {
+		if (item.routeMapUrl) return item.routeMapUrl;
 		if (item.lat != null && item.lng != null) return kakaoMapUrl(item.title, item.lat, item.lng);
 		return kakaoSearchUrl(item.address ?? item.title);
 	}

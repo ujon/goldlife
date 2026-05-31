@@ -372,7 +372,13 @@ function summarizeCandidates(candidates: CandidateBundle) {
 			source: candidate.source,
 			address: candidate.address,
 			tags: candidate.tags,
-			availabilityText: candidate.availabilityText
+			availabilityText: candidate.availabilityText,
+			travelMinutes: candidate.travelMinutes,
+			travelTimeText: candidate.travelTimeText,
+			travelDistanceMeters: candidate.travelDistanceMeters,
+			operatingStatus: candidate.operatingStatus,
+			arrivalTimeText: candidate.arrivalTimeText,
+			openingHoursText: candidate.openingHoursText
 		})),
 		restaurants: candidates.restaurants.slice(0, 8).map((candidate) => ({
 			title: candidate.title,
@@ -380,7 +386,13 @@ function summarizeCandidates(candidates: CandidateBundle) {
 			source: candidate.source,
 			address: candidate.address,
 			tags: candidate.tags,
-			availabilityText: candidate.availabilityText
+			availabilityText: candidate.availabilityText,
+			travelMinutes: candidate.travelMinutes,
+			travelTimeText: candidate.travelTimeText,
+			travelDistanceMeters: candidate.travelDistanceMeters,
+			operatingStatus: candidate.operatingStatus,
+			arrivalTimeText: candidate.arrivalTimeText,
+			openingHoursText: candidate.openingHoursText
 		})),
 		mobility: candidates.mobility
 	};

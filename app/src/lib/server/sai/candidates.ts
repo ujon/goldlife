@@ -4,6 +4,7 @@ import type {
 	CandidateBundle,
 	CandidateQueryPlan,
 	MobilityCandidate,
+	OperatingStatus,
 	ProviderStatus,
 	RestaurantCandidate,
 	WeatherCandidate
@@ -23,6 +24,20 @@ type GeoCandidate = {
 	lng?: number;
 	mapUrl?: string;
 	address?: string;
+};
+type CandidateSlot = 'activity' | 'food' | 'fallback';
+type OperatingInfo = {
+	operatingStatus: OperatingStatus;
+	travelMinutes: number;
+	travelTimeText: string;
+	travelDistanceMeters?: number;
+	routeMapUrl?: string;
+	arrivalTimeText: string;
+	openingHoursText?: string;
+	label: string;
+};
+type AvailabilityCheck = OperatingInfo & {
+	text: string;
 };
 
 const MYREALTRIP_BASE = 'https://partner-ext-api.myrealtrip.com';
@@ -120,7 +135,12 @@ async function getActivities(input: CandidateInput, statuses: ProviderStatus[]) 
 		...(apiFuseResult.status === 'fulfilled' ? apiFuseResult.value : []),
 		...(myrealtripResult.status === 'fulfilled' ? myrealtripResult.value : [])
 	]);
-	const activities = filterActivitiesForSession(input, rawActivities).slice(0, 8);
+	const activities = prioritizeByOperatingStatus(
+		dropTravelTooLong(
+			dropClosedAtArrival(filterActivitiesForSession(input, rawActivities)),
+			input.session
+		)
+	).slice(0, 8);
 	await logActivityQualityGuard(input, rawActivities, activities);
 
 	return activities.length ? activities : fallback;
@@ -236,16 +256,21 @@ async function getRestaurants(input: CandidateInput, statuses: ProviderStatus[])
 		...(catchtableResult.status === 'fulfilled' ? catchtableResult.value : []),
 		...(localResult.status === 'fulfilled' ? localResult.value : []),
 		...(yogiyoResult.status === 'fulfilled' ? yogiyoResult.value : [])
-	]).slice(0, 8);
+	]);
+	const arrivalSafeRestaurants = prioritizeByOperatingStatus(
+		dropTravelTooLong(dropClosedAtArrival(restaurants), input.session)
+	).slice(0, 8);
 
 	statuses.push({
 		provider: 'api_fuse',
 		configured: true,
-		ok: restaurants.length > 0,
-		fallbackReason: restaurants.length ? undefined : 'API Fuse restaurants returned no candidates'
+		ok: arrivalSafeRestaurants.length > 0,
+		fallbackReason: arrivalSafeRestaurants.length
+			? undefined
+			: 'API Fuse restaurants returned no candidates'
 	});
 
-	return restaurants.length ? restaurants : fallback;
+	return arrivalSafeRestaurants.length ? arrivalSafeRestaurants : fallback;
 }
 
 async function getCatchtableRestaurants(input: CandidateInput, apiKey: string) {
@@ -488,7 +513,7 @@ async function getApiFuseActivityCandidates(input: CandidateInput) {
 		input,
 		dedupeActivities(
 			rows
-				.map((row, index) => placeRowToActivity(row, index))
+				.map((row, index) => placeRowToActivity(input, row, index))
 				.filter((candidate): candidate is ActivityCandidate => Boolean(candidate))
 		)
 	).slice(0, 8);
@@ -506,16 +531,19 @@ async function enrichActivityCandidates(
 				getMyrealtripAvailability(input, candidate, myrealtripApiKey),
 				apifuseApiKey ? findKakaoPlace(input, candidate.title, apifuseApiKey) : null
 			]);
-			return {
-				...candidate,
-				reservationUrl: candidate.outboundUrl,
-				mapUrl: place?.mapUrl ?? candidate.mapUrl,
-				address: place?.address ?? candidate.address,
-				lat: place?.lat ?? candidate.lat,
-				lng: place?.lng ?? candidate.lng,
-				availabilityText: booking ?? candidate.availabilityText,
-				tags: [...new Set([...candidate.tags, ...(booking ? ['예약 가능성 확인'] : [])])]
-			};
+			return withOperatingInfo(
+				{
+					...candidate,
+					reservationUrl: candidate.outboundUrl,
+					mapUrl: place?.mapUrl ?? candidate.mapUrl,
+					address: place?.address ?? candidate.address,
+					lat: place?.lat ?? candidate.lat,
+					lng: place?.lng ?? candidate.lng,
+					availabilityText: booking ?? candidate.availabilityText,
+					tags: [...new Set([...candidate.tags, ...(booking ? ['예약 가능성 확인'] : [])])]
+				},
+				operatingInfoForCandidate(input, place ?? candidate, 'activity')
+			);
 		})
 	);
 }
@@ -536,23 +564,28 @@ async function enrichRestaurants(
 				canLookupPlace ? findKakaoPlace(input, restaurant.title, apiKey) : null,
 				getCatchtableShopSummary(restaurant, apiKey)
 			]);
-			return {
-				...restaurant,
-				mapUrl: restaurant.mapUrl ?? place?.mapUrl,
-				address: restaurant.address || shop?.address || place?.address,
-				lat: restaurant.lat ?? place?.lat,
-				lng: restaurant.lng ?? place?.lng,
-				availabilityText: availability ?? restaurant.availabilityText,
-				thumbnailUrl: restaurant.thumbnailUrl ?? shop?.thumbnailUrl,
-				reservationHint: availability ?? restaurant.reservationHint,
-				tags: [
-					...new Set([
-						...restaurant.tags,
-						...(shop?.tags ?? []),
-						...(availability ? ['예약 슬롯 확인'] : [])
-					])
-				]
-			};
+			const operatingInfo =
+				availability ?? operatingInfoForCandidate(input, place ?? restaurant, 'food');
+			return withOperatingInfo(
+				{
+					...restaurant,
+					mapUrl: restaurant.mapUrl ?? place?.mapUrl,
+					address: restaurant.address || shop?.address || place?.address,
+					lat: restaurant.lat ?? place?.lat,
+					lng: restaurant.lng ?? place?.lng,
+					availabilityText: availability?.text ?? restaurant.availabilityText,
+					thumbnailUrl: restaurant.thumbnailUrl ?? shop?.thumbnailUrl,
+					reservationHint: availability?.text ?? restaurant.reservationHint,
+					tags: [
+						...new Set([
+							...restaurant.tags,
+							...(shop?.tags ?? []),
+							...(availability ? ['예약 슬롯 확인'] : [])
+						])
+					]
+				},
+				operatingInfo
+			);
 		})
 	);
 }
@@ -563,7 +596,7 @@ async function getApiFuseRestaurantPlaces(input: CandidateInput, apiKey: string)
 
 	return dedupeRestaurants(
 		rows
-			.map((row, index) => placeRowToRestaurant(row, index))
+			.map((row, index) => placeRowToRestaurant(input, row, index))
 			.filter((candidate): candidate is RestaurantCandidate => Boolean(candidate))
 	).slice(0, 8);
 }
@@ -606,21 +639,25 @@ async function getYogiyoRestaurants(input: CandidateInput, apiKey: string) {
 		const deliveryMinutes =
 			numberValue(item.estimated_delivery_minutes) ??
 			numberValue(item.estimated_delivery_max_minutes);
-		return {
-			id: `yogiyo-${stringValue(item.shop_id) || index}`,
-			title: stringValue(item.name) || '요기요 음식점',
-			price: minOrder ? minOrder + (deliveryFee ?? 0) : undefined,
-			source: 'api_fuse',
-			outboundUrl: stringValue(item.web_url) || yogiyoSearchUrl(input.session.location?.label),
-			mapUrl: kakaoSearchUrl(stringValue(item.name) || '요기요 음식점'),
-			address: stringValue(item.address),
-			lat: numberValue(item.lat),
-			lng: numberValue(item.lng),
-			availabilityText: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined,
-			thumbnailUrl: thumbnailFromRow(item) || undefined,
-			tags: ['요기요', '배달 fallback', ...(item.is_open === false ? ['영업 확인 필요'] : [])],
-			reservationHint: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined
-		};
+		const operatingInfo = operatingInfoForRow(input, item, 'food');
+		return withOperatingInfo(
+			{
+				id: `yogiyo-${stringValue(item.shop_id) || index}`,
+				title: stringValue(item.name) || '요기요 음식점',
+				price: minOrder ? minOrder + (deliveryFee ?? 0) : undefined,
+				source: 'api_fuse',
+				outboundUrl: stringValue(item.web_url) || yogiyoSearchUrl(input.session.location?.label),
+				mapUrl: kakaoSearchUrl(stringValue(item.name) || '요기요 음식점'),
+				address: stringValue(item.address),
+				lat: numberValue(item.lat),
+				lng: numberValue(item.lng),
+				availabilityText: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined,
+				thumbnailUrl: thumbnailFromRow(item) || undefined,
+				tags: ['요기요', '배달 fallback'],
+				reservationHint: deliveryMinutes ? `배달 예상 ${deliveryMinutes}분` : undefined
+			},
+			operatingInfo
+		);
 	});
 }
 
@@ -629,7 +666,8 @@ async function getMyrealtripAvailability(
 	candidate: ActivityCandidate,
 	apiKey: string
 ) {
-	const selectedDate = selectedDateForReservation(input.session);
+	const arrival = arrivalDateForCandidate(input, candidate, 'activity');
+	const selectedDate = selectedDateForDate(arrival);
 	if (!candidate.id || candidate.id.startsWith('myrealtrip-') || !selectedDate) return undefined;
 
 	try {
@@ -667,9 +705,12 @@ async function getCatchtableAvailability(
 	input: CandidateInput,
 	restaurant: RestaurantCandidate,
 	apiKey: string
-) {
+): Promise<AvailabilityCheck | undefined> {
 	if (!restaurant.id) return undefined;
-	const selectedDate = selectedDateForReservation(input.session);
+	const arrival = arrivalDateForCandidate(input, restaurant, 'food');
+	const travelInfo = travelInfoForCandidate(input, restaurant, 'food');
+	const selectedDate = selectedDateForDate(arrival);
+	const visitTime = hhmmFromDate(arrival, ':');
 	if (!selectedDate) return undefined;
 
 	try {
@@ -689,7 +730,7 @@ async function getCatchtableAvailability(
 					date: selectedDate,
 					person: partyCount(input.session.situation),
 					table_type: '_ALL_',
-					visit_time: visitTimeForReservation(input.session)
+					visit_time: visitTime
 				}),
 				signal: AbortSignal.timeout(10000)
 			}
@@ -697,9 +738,7 @@ async function getCatchtableAvailability(
 		if (!response.ok) throw new Error(`CatchTable availability ${response.status}`);
 
 		const payload = await response.json();
-		const text = JSON.stringify(payload);
-		if (/available|예약가능|time|slot/i.test(text)) return `${selectedDate} 예약 가능 시간 확인됨`;
-		return `${selectedDate} 예약 페이지 확인`;
+		return catchtableAvailabilityInfo(payload, selectedDate, visitTime, arrival, travelInfo);
 	} catch {
 		return undefined;
 	}
@@ -760,7 +799,8 @@ async function findKakaoPlace(input: CandidateInput, query: string, apiKey: stri
 	];
 	const first = rows[0];
 	if (!first) return null;
-	return placeRowToGeo(first, query);
+	const detail = await getPlaceDetail(first, apiKey);
+	return placeRowToGeo(detail ? { ...first, ...detail } : first, query);
 }
 
 async function searchKakaoPlaces(
@@ -854,7 +894,64 @@ async function searchMapPlacesByQueries(
 		if (naverRows.status === 'fulfilled') rows.push(...naverRows.value);
 		if (rows.length >= maxRows) break;
 	}
-	return rows.slice(0, maxRows);
+	return enrichPlaceRowsWithDetails(rows.slice(0, maxRows), apiKey);
+}
+
+async function enrichPlaceRowsWithDetails(rows: Record<string, unknown>[], apiKey: string) {
+	let detailLookupCount = 0;
+	const maxDetailLookups = 8;
+	return Promise.all(
+		rows.map(async (row) => {
+			if (detailLookupCount >= maxDetailLookups) return row;
+			const detailId = placeDetailId(row);
+			if (!detailId) return row;
+			detailLookupCount += 1;
+			const detail = await getPlaceDetail(row, apiKey);
+			return detail ? { ...row, ...detail } : row;
+		})
+	);
+}
+
+function placeDetailId(row: Record<string, unknown>) {
+	const provider = stringValue(row._provider);
+	if (provider === 'naver') return stringValue(row.id);
+	return stringValue(row.confirm_id);
+}
+
+async function getPlaceDetail(row: Record<string, unknown>, apiKey: string) {
+	const provider = stringValue(row._provider);
+	const detailId = placeDetailId(row);
+	if (!detailId) return null;
+
+	try {
+		const isNaver = provider === 'naver';
+		const response = await loggedFetch({
+			provider: 'api_fuse',
+			kind: 'api',
+			operation: isNaver ? 'navermap.place' : 'kakaomap.place',
+			url: `${APIFUSE_BASE}/v1/${isNaver ? 'naver-map-api' : 'kakaomap-api'}/place`,
+			init: {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${apiKey}`,
+					'content-type': 'application/json'
+				},
+				body: JSON.stringify(isNaver ? { place_id: detailId } : { confirm_id: detailId }),
+				signal: AbortSignal.timeout(2500)
+			}
+		});
+		if (!response.ok) return null;
+
+		const payload = (await response.json()) as { data?: Record<string, unknown> };
+		const data = payload.data ?? {};
+		if (isNaver) {
+			const place = data.place as Record<string, unknown> | null | undefined;
+			return place ?? null;
+		}
+		return data;
+	} catch {
+		return null;
+	}
 }
 
 async function getKakaoRoute(
@@ -1044,44 +1141,53 @@ function fallbackActivities(input: CandidateInput): ActivityCandidate[] {
 	const baby = input.session.companionConstraints.hasBaby;
 	const freeformKeyword = freeformActivityKeyword(input.profile, input.session);
 	return [
-		{
-			id: 'fallback-activity-1',
-			title: baby
-				? '영유아 동반 실내 체험관'
-				: freeformKeyword
-					? `${freeformKeyword} 후보`
-					: '실내 원데이 클래스',
-			price: baby ? 18000 : 36000,
-			source: 'sai',
-			outboundUrl: 'https://map.kakao.com',
-			mapUrl: kakaoSearchUrl(baby ? '영유아 동반 실내 체험관' : '실내 원데이 클래스'),
-			tags: baby ? ['유모차', '실내'] : ['온보딩 답변 반영', '예약 후보']
-		},
-		{
-			id: 'fallback-activity-2',
-			title: baby ? '실내 식물원 산책' : '짧은 전시 또는 팝업',
-			price: baby ? 16000 : 22000,
-			source: 'sai',
-			outboundUrl: 'https://map.kakao.com',
-			mapUrl: kakaoSearchUrl(baby ? '실내 식물원 산책' : '짧은 전시 팝업'),
-			tags: ['날씨 fallback', '짧은 동선']
-		}
+		withOperatingInfo(
+			{
+				id: 'fallback-activity-1',
+				title: baby
+					? '영유아 동반 실내 체험관'
+					: freeformKeyword
+						? `${freeformKeyword} 후보`
+						: '실내 원데이 클래스',
+				price: baby ? 18000 : 36000,
+				source: 'sai',
+				outboundUrl: 'https://map.kakao.com',
+				mapUrl: kakaoSearchUrl(baby ? '영유아 동반 실내 체험관' : '실내 원데이 클래스'),
+				tags: baby ? ['유모차', '실내'] : ['온보딩 답변 반영', '예약 후보']
+			},
+			operatingInfoForCandidate(input, {}, 'activity')
+		),
+		withOperatingInfo(
+			{
+				id: 'fallback-activity-2',
+				title: baby ? '실내 식물원 산책' : '짧은 전시 또는 팝업',
+				price: baby ? 16000 : 22000,
+				source: 'sai',
+				outboundUrl: 'https://map.kakao.com',
+				mapUrl: kakaoSearchUrl(baby ? '실내 식물원 산책' : '짧은 전시 팝업'),
+				tags: ['날씨 fallback', '짧은 동선']
+			},
+			operatingInfoForCandidate(input, {}, 'activity')
+		)
 	];
 }
 
 function fallbackRestaurants(input: CandidateInput): RestaurantCandidate[] {
 	const baby = input.session.companionConstraints.hasBaby;
 	return [
-		{
-			id: 'fallback-restaurant-1',
-			title: baby ? '넓은 좌석 키즈 프렌들리 카페' : '캐주얼 파스타 다이닝',
-			price: baby ? 32000 : 42000,
-			source: 'sai',
-			outboundUrl: 'https://app.catchtable.co.kr',
-			reservationUrl: 'https://app.catchtable.co.kr',
-			mapUrl: kakaoSearchUrl(baby ? '키즈 프렌들리 카페' : '캐주얼 파스타 다이닝'),
-			tags: baby ? ['수유실 확인', '주차'] : ['예약 후보', '맛집']
-		}
+		withOperatingInfo(
+			{
+				id: 'fallback-restaurant-1',
+				title: baby ? '넓은 좌석 키즈 프렌들리 카페' : '캐주얼 파스타 다이닝',
+				price: baby ? 32000 : 42000,
+				source: 'sai',
+				outboundUrl: 'https://app.catchtable.co.kr',
+				reservationUrl: 'https://app.catchtable.co.kr',
+				mapUrl: kakaoSearchUrl(baby ? '키즈 프렌들리 카페' : '캐주얼 파스타 다이닝'),
+				tags: baby ? ['수유실 확인', '주차'] : ['예약 후보', '맛집']
+			},
+			operatingInfoForCandidate(input, {}, 'food')
+		)
 	];
 }
 
@@ -1120,6 +1226,471 @@ function numberValue(value: unknown) {
 		return Number.isFinite(parsed) ? parsed : undefined;
 	}
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanValue(value: unknown) {
+	if (typeof value === 'boolean') return value;
+	if (typeof value === 'string') {
+		if (/^(true|open|영업|운영)$/i.test(value.trim())) return true;
+		if (/^(false|closed|휴무|종료)$/i.test(value.trim())) return false;
+	}
+	return undefined;
+}
+
+function withOperatingInfo<T extends { availabilityText?: string; tags: string[] }>(
+	candidate: T,
+	info: OperatingInfo
+) {
+	return {
+		...candidate,
+		availabilityText: appendUniqueText(candidate.availabilityText, info.label),
+		travelMinutes: info.travelMinutes,
+		travelTimeText: info.travelTimeText,
+		travelDistanceMeters: info.travelDistanceMeters,
+		routeMapUrl: info.routeMapUrl,
+		operatingStatus: info.operatingStatus,
+		arrivalTimeText: info.arrivalTimeText,
+		openingHoursText: info.openingHoursText,
+		tags: [...new Set([...candidate.tags, operatingStatusTag(info.operatingStatus)])]
+	};
+}
+
+function operatingInfoForRow(
+	input: CandidateInput,
+	row: Record<string, unknown>,
+	slot: CandidateSlot
+): OperatingInfo {
+	return operatingInfoForCandidate(input, row, slot, row);
+}
+
+function operatingInfoForCandidate(
+	input: CandidateInput,
+	candidate: { title?: string; address?: string; lat?: number; lng?: number },
+	slot: CandidateSlot,
+	row?: Record<string, unknown>
+): OperatingInfo {
+	const travelInfo = travelInfoForCandidate(input, candidate, slot);
+	const arrival = arrivalDateForCandidate(input, candidate, slot);
+	const arrivalTimeText = formatArrivalTime(arrival);
+	const openingHoursText = row ? openingHoursTextFromRow(row, arrival) : undefined;
+	const hoursStatus = row ? operatingStatusFromHours(row, arrival) : undefined;
+	const currentStatus = row ? operatingStatusFromCurrentStatus(row, arrival) : undefined;
+	const operatingStatus = hoursStatus ?? currentStatus ?? 'unknown';
+	return {
+		operatingStatus,
+		...travelInfo,
+		arrivalTimeText,
+		openingHoursText,
+		label: operatingInfoLabel(operatingStatus, arrivalTimeText, openingHoursText)
+	};
+}
+
+function catchtableAvailabilityInfo(
+	payload: unknown,
+	selectedDate: string,
+	visitTime: string,
+	arrival: Date,
+	travelInfo: Pick<
+		OperatingInfo,
+		'travelMinutes' | 'travelTimeText' | 'travelDistanceMeters' | 'routeMapUrl'
+	>
+): AvailabilityCheck {
+	const data =
+		payload && typeof payload === 'object'
+			? ((payload as { data?: Record<string, unknown> }).data ?? {})
+			: {};
+	const slots = Array.isArray(data.time_slots)
+		? data.time_slots.filter((slot): slot is string => typeof slot === 'string')
+		: [];
+	const nearestSlot = nearestTimeSlot(slots, visitTime);
+	const arrivalTimeText = formatArrivalTime(arrival);
+	const openingHoursText = slots.length
+		? `예약 가능 시간 ${slots.slice(0, 5).join(', ')}`
+		: undefined;
+
+	if (nearestSlot && Math.abs(minutesFromTime(nearestSlot) - minutesFromTime(visitTime)) <= 45) {
+		const text = `${selectedDate} ${nearestSlot} 예약 가능`;
+		return {
+			operatingStatus: 'open_at_arrival',
+			...travelInfo,
+			arrivalTimeText,
+			openingHoursText,
+			label: `${arrivalTimeText} 운영 확인`,
+			text
+		};
+	}
+
+	if (slots.length) {
+		const text = `${selectedDate} ${visitTime} 근처 예약 확인 필요`;
+		return {
+			operatingStatus: 'unknown',
+			...travelInfo,
+			arrivalTimeText,
+			openingHoursText,
+			label: `${arrivalTimeText} 운영 확인 필요`,
+			text
+		};
+	}
+
+	return {
+		operatingStatus: 'unknown',
+		...travelInfo,
+		arrivalTimeText,
+		label: `${arrivalTimeText} 운영 확인 필요`,
+		text: `${selectedDate} 예약 페이지 확인`
+	};
+}
+
+function nearestTimeSlot(slots: string[], targetTime: string) {
+	const targetMinutes = minutesFromTime(targetTime);
+	return slots
+		.map((slot) => ({ slot, diff: Math.abs(minutesFromTime(slot) - targetMinutes) }))
+		.filter((item) => Number.isFinite(item.diff))
+		.sort((a, b) => a.diff - b.diff)[0]?.slot;
+}
+
+function operatingStatusFromHours(row: Record<string, unknown>, arrival: Date) {
+	const businessHours = row.businessHours ?? row.business_hours ?? row.openingHours;
+	if (Array.isArray(businessHours)) return operatingStatusFromBusinessHours(businessHours, arrival);
+	const text = openingHoursTextFromRow(row, arrival);
+	if (!text) return undefined;
+	return operatingStatusFromHoursText(text, arrival);
+}
+
+function operatingStatusFromBusinessHours(hours: unknown[], arrival: Date) {
+	const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+	const arrivalDay = dayNames[kstDateParts(arrival).day];
+	const rows = hours
+		.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+		.filter((item) => {
+			const day = stringValue(item.day);
+			return !day || day.includes('매일') || day.includes('오늘') || day.includes(arrivalDay);
+		});
+	if (!rows.length) return undefined;
+	if (rows.some((item) => item.isHoliday === true)) return 'closed_at_arrival' as const;
+	for (const row of rows) {
+		const open = stringValue(row.open);
+		const close = stringValue(row.close);
+		if (!open || !close) continue;
+		if (isTimeInWindow(kstMinutes(arrival), minutesFromTime(open), minutesFromTime(close))) {
+			return 'open_at_arrival' as const;
+		}
+	}
+	return rows.some((row) => stringValue(row.open) && stringValue(row.close))
+		? ('closed_at_arrival' as const)
+		: undefined;
+}
+
+function operatingStatusFromCurrentStatus(row: Record<string, unknown>, arrival: Date) {
+	const statusText = [
+		stringValue(row.status),
+		stringValue(row.currentStatus),
+		stringValue(row.currentStatusDetail),
+		stringValue(row.open_status_code)
+	].join(' ');
+	const openNow =
+		booleanValue(row.is_open) ??
+		booleanValue(row.open) ??
+		(/OPEN|영업\s*중|운영\s*중/i.test(statusText)
+			? true
+			: /CLOSED|휴무|영업\s*종료|운영\s*종료/i.test(statusText)
+				? false
+				: undefined);
+	if (openNow == null) return undefined;
+	const minutesUntilArrival = Math.round((arrival.getTime() - Date.now()) / 60000);
+	if (minutesUntilArrival > 90) return undefined;
+	return openNow ? ('open_at_arrival' as const) : ('closed_at_arrival' as const);
+}
+
+function openingHoursTextFromRow(row: Record<string, unknown>, arrival: Date) {
+	const direct =
+		stringValue(row.openingHours) ||
+		stringValue(row.opening_hours) ||
+		stringValue(row.business_hours) ||
+		stringValue(row.operatingHours) ||
+		stringValue(row.operationTime) ||
+		stringValue(row.hours);
+	if (direct) return direct;
+	const businessHours = row.businessHours;
+	if (!Array.isArray(businessHours)) return undefined;
+	const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+	const arrivalDay = dayNames[kstDateParts(arrival).day];
+	const rows = businessHours.filter((item): item is Record<string, unknown> => {
+		if (!item || typeof item !== 'object') return false;
+		const day = stringValue(item.day);
+		return !day || day.includes('매일') || day.includes('오늘') || day.includes(arrivalDay);
+	});
+	return rows
+		.map((item) => {
+			const day = stringValue(item.day);
+			if (item.isHoliday === true) return day ? `${day} 휴무` : '휴무';
+			const open = stringValue(item.open);
+			const close = stringValue(item.close);
+			if (!open || !close) return day;
+			return `${day ? `${day} ` : ''}${open}-${close}`;
+		})
+		.filter(Boolean)
+		.join(', ');
+}
+
+function operatingStatusFromHoursText(text: string, arrival: Date): OperatingStatus | undefined {
+	const windows = [
+		...text.matchAll(
+			/(?:(오전|오후)\s*)?(\d{1,2})(?::(\d{2}))?\s*[~-]\s*(?:(오전|오후)\s*)?(\d{1,2})(?::(\d{2}))?/g
+		)
+	];
+	if (!windows.length) return undefined;
+	const arrivalMinutes = kstMinutes(arrival);
+	const openWindow = windows.some((match) => {
+		const open = minutesFromMatch(match[1], match[2], match[3]);
+		const close = minutesFromMatch(match[4], match[5], match[6]);
+		return isTimeInWindow(arrivalMinutes, open, close);
+	});
+	return openWindow ? 'open_at_arrival' : 'closed_at_arrival';
+}
+
+function minutesFromMatch(ampm: string | undefined, hourValue?: string, minuteValue?: string) {
+	let hour = Number(hourValue ?? 0);
+	const minute = Number(minuteValue ?? 0);
+	if (ampm === '오후' && hour < 12) hour += 12;
+	if (ampm === '오전' && hour === 12) hour = 0;
+	return hour * 60 + minute;
+}
+
+function isTimeInWindow(current: number, open: number, close: number) {
+	if (!Number.isFinite(open) || !Number.isFinite(close)) return false;
+	if (close <= open) return current >= open || current <= close;
+	return current >= open && current <= close;
+}
+
+function arrivalDateForCandidate(
+	input: CandidateInput,
+	candidate: { title?: string; address?: string; lat?: number; lng?: number },
+	slot: CandidateSlot
+) {
+	const base = sessionStartDate(input.session);
+	const stageOffset = slot === 'food' ? plannedFoodOffsetMinutes(input.session) : 0;
+	const travelOffset = travelInfoForCandidate(input, candidate, slot).travelMinutes;
+	const offset = slot === 'food' ? Math.max(stageOffset, travelOffset) : travelOffset;
+	return new Date(base.getTime() + offset * 60000);
+}
+
+function travelInfoForCandidate(
+	input: CandidateInput,
+	candidate: { title?: string; address?: string; lat?: number; lng?: number },
+	slot: CandidateSlot
+): Pick<
+	OperatingInfo,
+	'travelMinutes' | 'travelTimeText' | 'travelDistanceMeters' | 'routeMapUrl'
+> {
+	const minutes = estimateTravelMinutes(input, candidate, slot);
+	const distance = travelDistanceMeters(input, candidate);
+	const destination =
+		candidate.title || candidate.address
+			? {
+					title: candidate.title ?? candidate.address ?? '도착지',
+					lat: candidate.lat,
+					lng: candidate.lng,
+					address: candidate.address
+				}
+			: undefined;
+	return {
+		travelMinutes: minutes,
+		travelTimeText: `${transportLabel(transportModeForSession(input.session))} 약 ${minutes}분`,
+		travelDistanceMeters: distance,
+		routeMapUrl: routeMapUrl(input.session.location, destination)
+	};
+}
+
+function sessionStartDate(session: RecommendationSession) {
+	const source = session.startDateTime ? new Date(session.startDateTime) : new Date();
+	return Number.isNaN(source.getTime()) ? new Date() : source;
+}
+
+function plannedFoodOffsetMinutes(session: RecommendationSession) {
+	if (session.availableTime === 'one_hour') return 30;
+	if (session.availableTime === 'two_three') return 75;
+	if (session.availableTime === 'day' || session.availableTime === 'weekend') return 150;
+	return 105;
+}
+
+function estimateTravelMinutes(
+	input: CandidateInput,
+	candidate: { lat?: number; lng?: number },
+	slot: CandidateSlot
+) {
+	const origin = input.session.location;
+	if (!origin?.lat || !origin.lng || candidate.lat == null || candidate.lng == null) {
+		return slot === 'food' ? 20 : 12;
+	}
+	const distance = distanceMeters(origin.lat, origin.lng, candidate.lat, candidate.lng);
+	if (input.session.companionConstraints.hasBaby) return clampMinutes(distance / 420 + 8, 8, 55);
+	if (input.session.availableTime === 'one_hour' && distance <= 1600) {
+		return clampMinutes(distance / 75, 5, 25);
+	}
+	return clampMinutes(distance / 360 + 8, 8, 60);
+}
+
+function travelDistanceMeters(input: CandidateInput, candidate: { lat?: number; lng?: number }) {
+	const origin = input.session.location;
+	if (!origin?.lat || !origin.lng || candidate.lat == null || candidate.lng == null)
+		return undefined;
+	return Math.round(distanceMeters(origin.lat, origin.lng, candidate.lat, candidate.lng));
+}
+
+function transportModeForSession(
+	session: RecommendationSession
+): NonNullable<MobilityCandidate['mode']> {
+	if (session.companionConstraints.hasBaby) return 'car';
+	if (session.availableTime === 'one_hour') return 'walk';
+	return 'transit';
+}
+
+function clampMinutes(value: number, min: number, max: number) {
+	return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function formatArrivalTime(date: Date) {
+	return `도착 예상 ${hhmmFromDate(date, ':')}`;
+}
+
+function selectedDateForDate(source: Date) {
+	if (Number.isNaN(source.getTime())) return '';
+	const { year, month, date } = kstDateParts(source);
+	return `${year}-${`${month}`.padStart(2, '0')}-${`${date}`.padStart(2, '0')}`;
+}
+
+function hhmmFromDate(source: Date, separator = '') {
+	const { hour, minute } = kstDateParts(source);
+	return `${`${hour}`.padStart(2, '0')}${separator}${`${minute}`.padStart(2, '0')}`;
+}
+
+function kstDateParts(source: Date) {
+	const parts = new Intl.DateTimeFormat('en-CA', {
+		timeZone: 'Asia/Seoul',
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+		hour: '2-digit',
+		minute: '2-digit',
+		hourCycle: 'h23',
+		weekday: 'short'
+	}).formatToParts(source);
+	const value = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+	const dayMap: Record<string, number> = {
+		Sun: 0,
+		Mon: 1,
+		Tue: 2,
+		Wed: 3,
+		Thu: 4,
+		Fri: 5,
+		Sat: 6
+	};
+	return {
+		year: Number(value('year')),
+		month: Number(value('month')),
+		date: Number(value('day')),
+		hour: Number(value('hour')),
+		minute: Number(value('minute')),
+		day: dayMap[value('weekday')] ?? 0
+	};
+}
+
+function kstMinutes(source: Date) {
+	const { hour, minute } = kstDateParts(source);
+	return hour * 60 + minute;
+}
+
+function minutesFromTime(value: string) {
+	const match = value.match(/(\d{1,2})(?::(\d{2}))?/);
+	if (!match) return Number.NaN;
+	return Number(match[1]) * 60 + Number(match[2] ?? 0);
+}
+
+function operatingInfoLabel(
+	status: OperatingStatus,
+	arrivalTimeText: string,
+	openingHoursText?: string
+) {
+	if (status === 'open_at_arrival') return `${arrivalTimeText} 운영 확인`;
+	if (status === 'closed_at_arrival') return `${arrivalTimeText} 영업 종료 가능`;
+	return openingHoursText
+		? `${arrivalTimeText} 운영 시간 확인 필요`
+		: `${arrivalTimeText} 운영 확인 필요`;
+}
+
+function operatingStatusTag(status: OperatingStatus) {
+	if (status === 'open_at_arrival') return '도착 시간 운영 확인';
+	if (status === 'closed_at_arrival') return '도착 시간 영업 종료 가능';
+	return '운영 시간 확인 필요';
+}
+
+function appendUniqueText(...values: Array<string | undefined>) {
+	const seen = new Set<string>();
+	return values
+		.flatMap((value) => (value ? value.split(' · ') : []))
+		.filter((value) => {
+			const key = value.replace(/\s/g, '').toLowerCase();
+			if (!key || seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		})
+		.join(' · ');
+}
+
+function prioritizeByOperatingStatus<
+	T extends { operatingStatus?: OperatingStatus; score?: number; travelMinutes?: number }
+>(candidates: T[]) {
+	const priority: Record<OperatingStatus, number> = {
+		open_at_arrival: 0,
+		unknown: 1,
+		closed_at_arrival: 2
+	};
+	return [...candidates].sort((a, b) => {
+		const statusDiff =
+			priority[a.operatingStatus ?? 'unknown'] - priority[b.operatingStatus ?? 'unknown'];
+		if (statusDiff !== 0) return statusDiff;
+		const travelDiff = travelSortValue(a) - travelSortValue(b);
+		if (travelDiff !== 0) return travelDiff;
+		return (b.score ?? 0) - (a.score ?? 0);
+	});
+}
+
+function dropClosedAtArrival<T extends { operatingStatus?: OperatingStatus }>(candidates: T[]) {
+	const openOrUnknown = candidates.filter(
+		(candidate) => candidate.operatingStatus !== 'closed_at_arrival'
+	);
+	return openOrUnknown.length ? openOrUnknown : [];
+}
+
+function dropTravelTooLong<T extends { travelMinutes?: number }>(
+	candidates: T[],
+	session: RecommendationSession
+) {
+	const limit = maxTravelMinutes(session);
+	return candidates.filter((candidate) => (candidate.travelMinutes ?? 0) <= limit);
+}
+
+function travelSortValue(candidate: { travelMinutes?: number }) {
+	return candidate.travelMinutes ?? Number.MAX_SAFE_INTEGER;
+}
+
+function maxTravelMinutes(session: RecommendationSession) {
+	const explicitWindow = availableWindowMinutes(session);
+	if (explicitWindow) return Math.max(15, Math.min(75, Math.floor(explicitWindow * 0.35)));
+	if (session.availableTime === 'one_hour') return 25;
+	if (session.availableTime === 'two_three') return 45;
+	if (session.availableTime === 'half_day') return 60;
+	return 90;
+}
+
+function availableWindowMinutes(session: RecommendationSession) {
+	const start = session.startDateTime ? new Date(session.startDateTime) : null;
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()))
+		return undefined;
+	const minutes = Math.round((end.getTime() - start.getTime()) / 60000);
+	return minutes > 0 ? minutes : undefined;
 }
 
 function thumbnailFromRow(row: Record<string, unknown>) {
@@ -1219,7 +1790,11 @@ function placeRowToGeo(row: Record<string, unknown>, fallbackTitle: string): Geo
 	return { title, lat, lng, address, mapUrl };
 }
 
-function placeRowToActivity(row: Record<string, unknown>, index: number): ActivityCandidate | null {
+function placeRowToActivity(
+	input: CandidateInput,
+	row: Record<string, unknown>,
+	index: number
+): ActivityCandidate | null {
 	const geo = placeRowToGeo(row, '장소 후보');
 	if (!geo?.title) return null;
 	const provider = stringValue(row._provider);
@@ -1228,26 +1803,30 @@ function placeRowToActivity(row: Record<string, unknown>, index: number): Activi
 		stringValue(row.confirm_id) ||
 		stringValue(row.id) ||
 		`${provider || 'place'}-activity-${index}`;
-	return {
-		id,
-		title: geo.title,
-		source: 'api_fuse',
-		outboundUrl: geo.mapUrl,
-		mapUrl: geo.mapUrl,
-		address: geo.address,
-		lat: geo.lat,
-		lng: geo.lng,
-		availabilityText: '지도 장소 후보 확인됨',
-		thumbnailUrl: thumbnailFromRow(row) || undefined,
-		tags: [
-			provider === 'naver' ? '네이버지도' : '카카오맵',
-			category || '장소 후보',
-			'APIFuse'
-		].filter(Boolean)
-	};
+	return withOperatingInfo(
+		{
+			id,
+			title: geo.title,
+			source: 'api_fuse' as const,
+			outboundUrl: geo.mapUrl,
+			mapUrl: geo.mapUrl,
+			address: geo.address,
+			lat: geo.lat,
+			lng: geo.lng,
+			availabilityText: '지도 장소 후보 확인됨',
+			thumbnailUrl: thumbnailFromRow(row) || undefined,
+			tags: [
+				provider === 'naver' ? '네이버지도' : '카카오맵',
+				category || '장소 후보',
+				'APIFuse'
+			].filter(Boolean)
+		},
+		operatingInfoForRow(input, row, 'activity')
+	);
 }
 
 function placeRowToRestaurant(
+	input: CandidateInput,
 	row: Record<string, unknown>,
 	index: number
 ): RestaurantCandidate | null {
@@ -1259,24 +1838,27 @@ function placeRowToRestaurant(
 		stringValue(row.confirm_id) ||
 		stringValue(row.id) ||
 		`${provider || 'place'}-restaurant-${index}`;
-	return {
-		id,
-		title: geo.title,
-		source: 'api_fuse',
-		outboundUrl: geo.mapUrl,
-		mapUrl: geo.mapUrl,
-		address: geo.address,
-		lat: geo.lat,
-		lng: geo.lng,
-		availabilityText: '지도 장소 후보 확인됨',
-		thumbnailUrl: thumbnailFromRow(row) || undefined,
-		tags: [
-			provider === 'naver' ? '네이버지도' : '카카오맵',
-			category || '맛집 후보',
-			'APIFuse'
-		].filter(Boolean),
-		reservationHint: '지도 상세 확인'
-	};
+	return withOperatingInfo(
+		{
+			id,
+			title: geo.title,
+			source: 'api_fuse' as const,
+			outboundUrl: geo.mapUrl,
+			mapUrl: geo.mapUrl,
+			address: geo.address,
+			lat: geo.lat,
+			lng: geo.lng,
+			availabilityText: '지도 장소 후보 확인됨',
+			thumbnailUrl: thumbnailFromRow(row) || undefined,
+			tags: [
+				provider === 'naver' ? '네이버지도' : '카카오맵',
+				category || '맛집 후보',
+				'APIFuse'
+			].filter(Boolean),
+			reservationHint: '지도 상세 확인'
+		},
+		operatingInfoForRow(input, row, 'food')
+	);
 }
 
 function dedupeActivities(candidates: ActivityCandidate[]) {
@@ -1346,17 +1928,6 @@ function firstGeoCandidate(candidates: GeoCandidate[]) {
 	return candidates.find((candidate) => candidate.lat != null && candidate.lng != null);
 }
 
-function selectedDateForReservation(session: RecommendationSession) {
-	const source = session.startDateTime ? new Date(session.startDateTime) : new Date();
-	if (Number.isNaN(source.getTime())) return '';
-	const pad = (value: number) => `${value}`.padStart(2, '0');
-	return `${source.getFullYear()}-${pad(source.getMonth() + 1)}-${pad(source.getDate())}`;
-}
-
-function visitTimeForReservation(session: RecommendationSession) {
-	return hhmmFromSession(session, ':') || '19:00';
-}
-
 function hhmmFromSession(session: RecommendationSession, separator = '') {
 	const source = session.startDateTime ? new Date(session.startDateTime) : new Date();
 	if (Number.isNaN(source.getTime())) return '';
@@ -1424,6 +1995,12 @@ function activityRejectReason(input: CandidateInput, candidate: ActivityCandidat
 	const text = [candidate.title, candidate.address, ...candidate.tags].filter(Boolean).join(' ');
 	if (isBlockedForSession(input, text)) return 'long_activity_keyword';
 	if (isRemoteShortWindowCandidate(input, candidate)) return 'not_near_session_location';
+	if (
+		candidate.travelMinutes != null &&
+		candidate.travelMinutes > maxTravelMinutes(input.session)
+	) {
+		return 'travel_time_too_long';
+	}
 	return '';
 }
 

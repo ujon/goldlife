@@ -157,6 +157,13 @@ export type RecommendationItem = {
 	lat?: number;
 	lng?: number;
 	availabilityText?: string;
+	travelMinutes?: number;
+	travelTimeText?: string;
+	travelDistanceMeters?: number;
+	routeMapUrl?: string;
+	operatingStatus?: 'open_at_arrival' | 'closed_at_arrival' | 'unknown';
+	arrivalTimeText?: string;
+	openingHoursText?: string;
 	thumbnailUrl?: string;
 };
 
