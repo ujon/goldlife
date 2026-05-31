@@ -1697,6 +1697,72 @@
 		return koreanHours[normalized] ?? 0;
 	}
 
+	function parseKoreanDayCount(value: string) {
+		const normalized = value.trim();
+		const numeric = Number(normalized);
+		if (numeric > 0) return numeric;
+		const koreanDays: Record<string, number> = {
+			하룻: 1,
+			하루: 1,
+			한: 1,
+			하나: 1,
+			일: 1,
+			이틀: 2,
+			두: 2,
+			둘: 2,
+			이: 2,
+			사흘: 3,
+			세: 3,
+			셋: 3,
+			삼: 3,
+			나흘: 4,
+			네: 4,
+			넷: 4,
+			사: 4,
+			닷새: 5,
+			다섯: 5,
+			오: 5,
+			엿새: 6,
+			여섯: 6,
+			육: 6,
+			이레: 7,
+			일곱: 7,
+			칠: 7,
+			여드레: 8,
+			여덟: 8,
+			팔: 8,
+			아흐레: 9,
+			아홉: 9,
+			구: 9,
+			열흘: 10,
+			열: 10,
+			십: 10,
+			열하루: 11,
+			열한: 11,
+			열하나: 11,
+			십일: 11,
+			열이틀: 12,
+			열두: 12,
+			열둘: 12,
+			십이: 12,
+			열사흘: 13,
+			열세: 13,
+			열셋: 13,
+			십삼: 13,
+			열나흘: 14,
+			열네: 14,
+			열넷: 14,
+			십사: 14,
+			일주일: 7,
+			한주: 7,
+			한주일: 7,
+			칠일: 7,
+			며칠: 3,
+			몇일: 3
+		};
+		return koreanDays[normalized] ?? 0;
+	}
+
 	function normalizeMeridiemHour(hour: number, meridiem: string) {
 		if (/오후|낮|저녁|밤/.test(meridiem)) return hour < 12 ? hour + 12 : hour;
 		if (/오전|아침|새벽/.test(meridiem)) return hour === 12 ? 0 : hour;
@@ -1803,6 +1869,14 @@
 		return `${restMinutes}분`;
 	}
 
+	function dayDurationLabel(minutes: number) {
+		const days = Math.floor(minutes / (24 * 60));
+		const restHours = Math.round((minutes - days * 24 * 60) / 60);
+		if (days && restHours) return `${days}일 ${restHours}시간`;
+		if (days) return `${days}일`;
+		return durationRangeLabel(minutes);
+	}
+
 	function applyTimeRange(range: ParsedTimeRange) {
 		session.startDateTime = range.start;
 		session.endDateTime = range.end;
@@ -1891,6 +1965,51 @@
 		};
 	}
 
+	function parseMultiDayDurationFromNow(text: string): ParsedTimeRange | null {
+		if (/\d+\s*시(?!간)|부터\s*\d|까지/.test(text)) return null;
+		const normalized = text.replace(/\s/g, '');
+		const dayCountPattern =
+			'\\d{1,2}|하룻|하루|이틀|사흘|나흘|닷새|엿새|이레|여드레|아흐레|열흘|열하루|열이틀|열사흘|열나흘|열하나|열한|열두|열둘|열세|열셋|열네|열넷|십사|십삼|십이|십일|십|한|두|세|네|다섯|여섯|일곱|여덟|아홉|일|이|삼|사|오|육|칠|팔|구';
+		const nightDayMatch = normalized.match(
+			new RegExp(`(${dayCountPattern})박(${dayCountPattern})일?`)
+		);
+		const weekMatch = normalized.match(new RegExp(`(${dayCountPattern})주(?:일)?|일주일|한주일?`));
+		const lexicalDayMatch = normalized.match(
+			/(하룻|하루|이틀|사흘|나흘|닷새|엿새|이레|여드레|아흐레|열흘|열하루|열이틀|열사흘|열나흘|며칠|몇일)(?:동안|간|정도|쯤|만|내내|가능|있어|됨|돼|반)?/
+		);
+		const countedDayMatch = normalized.match(
+			new RegExp(`(${dayCountPattern})일(?:동안|간|정도|쯤|만|내내|가능|있어|됨|돼|반)?`)
+		);
+		const dayMatch = nightDayMatch ?? lexicalDayMatch ?? countedDayMatch;
+
+		let days = 0;
+		if (nightDayMatch) {
+			days = parseKoreanDayCount(nightDayMatch[2] ?? '');
+		} else if (weekMatch) {
+			days = parseKoreanDayCount(weekMatch[1] || '일주일') * 7;
+		} else if (dayMatch) {
+			days = parseKoreanDayCount(dayMatch[1] ?? '');
+		}
+		if (!Number.isFinite(days) || days <= 0 || days > 14) return null;
+
+		const hourMatch = normalized.match(
+			/(?:하룻|하루|일|이틀|사흘|나흘|닷새|엿새|이레|여드레|아흐레|열흘|열하루|열이틀|열사흘|열나흘|며칠|몇일)(\d{1,2}|한|두|세|네|다섯|여섯|일곱|여덟|아홉|일|이|삼|사|오|육|칠|팔|구)시간/
+		);
+		const extraHours = hourMatch ? parseKoreanHour(hourMatch[1] ?? '') : 0;
+		const extraMinutes = /반/.test(normalized) ? 12 * 60 : 0;
+		const minutes = Math.round(days * 24 * 60 + extraHours * 60 + extraMinutes);
+
+		const base = dateBaseFromText(text);
+		const start = isTodayText(text) ? currentDateTime() : dateWithTime(base, 9, 0);
+		const end = new Date(start.getTime() + minutes * MINUTE_MS);
+
+		return {
+			start: toDatetimeLocalValue(start),
+			end: toDatetimeLocalValue(end),
+			label: `${formatTimeRangeLabel(start, end)} · ${dayDurationLabel(minutes)}`
+		};
+	}
+
 	function parseDurationFromNow(text: string): ParsedTimeRange | null {
 		if (/\d+\s*시(?!간)|부터|까지/.test(text)) return null;
 		const normalized = text.replace(/\s/g, '');
@@ -1931,7 +2050,10 @@
 
 	function applyTimeTranscript(text: string) {
 		const parsedRange =
-			parseSpokenTimeRange(text) ?? parseFlexibleDayRange(text) ?? parseDurationFromNow(text);
+			parseSpokenTimeRange(text) ??
+			parseFlexibleDayRange(text) ??
+			parseMultiDayDurationFromNow(text) ??
+			parseDurationFromNow(text);
 		if (parsedRange) {
 			applyTimeRange(parsedRange);
 			customTimeInput = text;
@@ -2530,22 +2652,36 @@
 
 	function safeExternalUrl(url: string | undefined, fallbackQuery: string) {
 		if (!url) return undefined;
-		if (isInvalidMyrealtripUrl(url)) return myrealtripSearchUrl(fallbackQuery);
-		return url;
-	}
-
-	function isInvalidMyrealtripUrl(url: string) {
 		try {
 			const parsed = new URL(url);
-			if (!parsed.hostname.endsWith('myrealtrip.com')) return false;
-			return /^\/offers\/(?:example|myrealtrip-\d+)(?:\/|$)/.test(parsed.pathname);
+			if (!/^https?:$/i.test(parsed.protocol)) {
+				return /myrealtrip/i.test(url) ? myrealtripSearchUrl(fallbackQuery) : undefined;
+			}
+			if (isInvalidMyrealtripUrl(parsed)) return myrealtripSearchUrl(fallbackQuery);
+			if (isGenericCatchtableUrl(parsed)) return catchtableSearchUrl(fallbackQuery);
+			return url;
 		} catch {
-			return false;
+			return undefined;
 		}
+	}
+
+	function isInvalidMyrealtripUrl(parsed: URL) {
+		if (!parsed.hostname.endsWith('myrealtrip.com')) return false;
+		return /^\/offers\/(?:example|myrealtrip-\d+)(?:\/|$)/.test(parsed.pathname);
 	}
 
 	function myrealtripSearchUrl(query: string) {
 		return `https://www.myrealtrip.com/search?keyword=${encodeURIComponent(query)}`;
+	}
+
+	function isGenericCatchtableUrl(parsed: URL) {
+		if (!parsed.hostname.endsWith('catchtable.co.kr')) return false;
+		const normalizedPath = parsed.pathname.replace(/\/+$/, '');
+		return normalizedPath === '';
+	}
+
+	function catchtableSearchUrl(query: string) {
+		return `https://app.catchtable.co.kr/ct/search?keyword=${encodeURIComponent(query)}`;
 	}
 
 	function itemLocationUrl(item: RecommendationItem) {
@@ -3081,7 +3217,7 @@
 			<section class="screen decision-screen onboarding-screen recommendation-screen">
 				{@render recommendationCoach(
 					'추천 질문 1/4',
-					'오늘 시간은 어느 정도 있어?',
+					'시간 얼마나 있어?',
 					'한 시간이든 반나절이든 괜찮아. 딱 가능한 만큼만 알려줘.',
 					'time'
 				)}

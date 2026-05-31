@@ -430,6 +430,10 @@ function myrealtripSearchUrl(query: string) {
 	return `https://www.myrealtrip.com/search?keyword=${encodeURIComponent(query)}`;
 }
 
+function catchtableSearchUrl(query: string) {
+	return `https://app.catchtable.co.kr/ct/search?keyword=${encodeURIComponent(query)}`;
+}
+
 export function timeMeta(availableTime?: string) {
 	return timeOptions.find((option) => option.id === availableTime) ?? timeOptions[2];
 }
@@ -1099,7 +1103,7 @@ function babyRecommendations(
 					title: '넓은 좌석 키즈 프렌들리 카페',
 					price: Math.round(firstCost * 0.45),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('넓은 좌석 키즈 프렌들리 카페')
 				}
 			]
 		}),
@@ -1131,7 +1135,7 @@ function babyRecommendations(
 					title: '주차 쉬운 브런치 카페',
 					price: Math.round(secondCost * 0.58),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('주차 쉬운 브런치 카페')
 				}
 			]
 		}),
@@ -1205,7 +1209,7 @@ function friendRecommendations(
 					title: '캐주얼 파스타 다이닝',
 					price: Math.round(firstCost * 0.38),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('캐주얼 파스타 다이닝')
 				}
 			]
 		}),
@@ -1267,7 +1271,7 @@ function friendRecommendations(
 					title: '가볍게 먹는 분식/덮밥',
 					price: Math.round(thirdCost * 0.42),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('분식 덮밥')
 				}
 			]
 		})
@@ -1410,7 +1414,7 @@ function coupleRecommendations(
 					title: '분위기 좋은 캐주얼 다이닝',
 					price: Math.round(firstCost * 0.58),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('분위기 좋은 캐주얼 다이닝')
 				}
 			]
 		}),
@@ -1472,7 +1476,7 @@ function coupleRecommendations(
 					title: '늦게까지 여는 다이닝',
 					price: Math.round(thirdCost * 0.35),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('늦게까지 여는 다이닝')
 				}
 			]
 		})
@@ -1519,7 +1523,7 @@ function familyRecommendations(
 					title: '주차 쉬운 가족 식당',
 					price: Math.round(firstCost * 0.55),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('주차 쉬운 가족 식당')
 				}
 			]
 		}),
@@ -1621,7 +1625,7 @@ function groupRecommendations(
 					title: '단체 예약 가능한 식당',
 					price: Math.round(firstCost * 0.55),
 					source: 'api_fuse',
-					outboundUrl: 'https://app.catchtable.co.kr'
+					outboundUrl: catchtableSearchUrl('단체 예약 가능한 식당')
 				}
 			]
 		}),

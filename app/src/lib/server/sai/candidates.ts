@@ -214,8 +214,7 @@ async function getMyrealtripActivities(input: CandidateInput, statuses: Provider
 			const title =
 				stringValue(item.itemName) || stringValue(item.title) || '마이리얼트립 액티비티';
 			const price = numberValue(item.salePrice);
-			const outboundUrl =
-				stringValue(item.deepLink) || stringValue(item.productUrl) || myrealtripSearchUrl(title);
+			const outboundUrl = myrealtripProductUrl(item, gid, title);
 
 			return {
 				id: gid,
@@ -468,20 +467,32 @@ async function getCatchtableRestaurants(input: CandidateInput, apiKey: string) {
 	).flat();
 	const restaurants = rows.map((row, index): RestaurantCandidate => {
 		const item = row as Record<string, unknown>;
-		const shopRef = stringValue(item.shopRef) || stringValue(item.id) || `catchtable-${index}`;
-		const outboundUrl = stringValue(item.url) || catchtableShopUrl(shopRef);
+		const shopRef =
+			stringValue(item.shopRef) ||
+			stringValue(item.shop_ref) ||
+			stringValue(item.id) ||
+			`catchtable-${index}`;
+		const title =
+			stringValue(item.name) ||
+			stringValue(item.shopName) ||
+			stringValue(item.shop_name) ||
+			'캐치테이블 맛집';
+		const outboundUrl = catchtableExternalUrl(item, shopRef, title);
 		const lat = numberValue(item.lat) ?? numberValue(item.latitude);
 		const lng = numberValue(item.lon) ?? numberValue(item.lng) ?? numberValue(item.longitude);
 		return {
 			id: shopRef,
-			title: stringValue(item.name) || stringValue(item.shopName) || '캐치테이블 맛집',
-			price: numberValue(item.averagePrice),
+			title,
+			price: numberValue(item.averagePrice) ?? numberValue(item.average_price),
 			source: 'api_fuse',
 			sourceName: '캐치테이블',
 			outboundUrl,
 			reservationUrl: outboundUrl,
-			mapUrl: kakaoSearchUrl(stringValue(item.name) || stringValue(item.shopName) || shopRef),
-			address: stringValue(item.address) || stringValue(item.roadAddress),
+			mapUrl: kakaoSearchUrl(title),
+			address:
+				stringValue(item.address) ||
+				stringValue(item.roadAddress) ||
+				stringValue(item.road_address),
 			lat,
 			lng,
 			thumbnailUrl: thumbnailFromRow(item) || undefined,
@@ -732,6 +743,9 @@ async function enrichRestaurants(
 			return withOperatingInfo(
 				{
 					...restaurant,
+					outboundUrl: shop?.outboundUrl ?? restaurant.outboundUrl,
+					reservationUrl: shop?.reservationUrl ?? restaurant.reservationUrl,
+					title: shop?.title ?? restaurant.title,
 					mapUrl: restaurant.mapUrl ?? place?.mapUrl,
 					address: restaurant.address || shop?.address || place?.address,
 					lat: restaurant.lat ?? place?.lat,
@@ -938,7 +952,13 @@ async function getCatchtableShopSummary(restaurant: RestaurantCandidate, apiKey:
 		const foodKind = stringValue(data.foodKind);
 		const rating = numberValue(data.avgRating);
 		const reviewCount = numberValue(data.reviewCount);
+		const shopRef = stringValue(data.shopRef) || stringValue(data.shop_ref) || restaurant.id;
+		const title = stringValue(data.shopName) || stringValue(data.shop_name) || restaurant.title;
+		const outboundUrl = catchtableExternalUrl(data, shopRef, title);
 		return {
+			title,
+			outboundUrl,
+			reservationUrl: outboundUrl,
 			address: stringValue(data.address) || undefined,
 			thumbnailUrl: thumbnailFromRow(data) || undefined,
 			tags: [
@@ -1440,8 +1460,8 @@ function fallbackRestaurants(input: CandidateInput): RestaurantCandidate[] {
 				price: baby ? 32000 : 42000,
 				source: 'sai',
 				sourceName: '캐치테이블 검색',
-				outboundUrl: 'https://app.catchtable.co.kr',
-				reservationUrl: 'https://app.catchtable.co.kr',
+				outboundUrl: catchtableSearchUrl(baby ? '키즈 프렌들리 카페' : '캐주얼 파스타 다이닝'),
+				reservationUrl: catchtableSearchUrl(baby ? '키즈 프렌들리 카페' : '캐주얼 파스타 다이닝'),
 				mapUrl: kakaoSearchUrl(baby ? '키즈 프렌들리 카페' : '캐주얼 파스타 다이닝'),
 				tags: baby ? ['수유실 확인', '주차'] : ['예약 후보', '맛집']
 			},
@@ -2355,10 +2375,55 @@ function kakaoMapUrl(title: string, lat?: number, lng?: number) {
 	return `https://map.kakao.com/link/map/${encodeURIComponent(title)},${lat},${lng}`;
 }
 
-function catchtableShopUrl(shopRef: string) {
+function httpUrlValue(...values: unknown[]) {
+	for (const value of values) {
+		const text = stringValue(value).trim();
+		if (/^https?:\/\//i.test(text)) return text;
+	}
+	return '';
+}
+
+function myrealtripProductUrl(row: Record<string, unknown>, gid: string, title: string) {
+	const directUrl = httpUrlValue(
+		row.productUrl,
+		row.product_url,
+		row.webUrl,
+		row.web_url,
+		row.url,
+		row.deepLink,
+		row.deep_link
+	);
+	if (directUrl) return directUrl;
+	if (gid && !gid.startsWith('myrealtrip-')) {
+		return `https://www.myrealtrip.com/offers/${encodeURIComponent(gid)}`;
+	}
+	return myrealtripSearchUrl(title);
+}
+
+function catchtableExternalUrl(row: Record<string, unknown>, shopRef: string, title: string) {
+	const directUrl = httpUrlValue(
+		row.url,
+		row.webUrl,
+		row.web_url,
+		row.shopUrl,
+		row.shop_url,
+		row.reservationUrl,
+		row.reservation_url
+	);
+	if (directUrl) return directUrl;
+	const path = stringValue(row.path) || stringValue(row.pathname) || stringValue(row.deeplinkPath);
+	if (path.startsWith('/')) return `https://app.catchtable.co.kr${path}`;
+	return catchtableShopUrl(shopRef, title);
+}
+
+function catchtableShopUrl(shopRef: string, title = '맛집') {
 	return shopRef && !shopRef.startsWith('catchtable-')
 		? `https://app.catchtable.co.kr/ct/shop/${encodeURIComponent(shopRef)}`
-		: 'https://app.catchtable.co.kr';
+		: catchtableSearchUrl(title);
+}
+
+function catchtableSearchUrl(query: string) {
+	return `https://app.catchtable.co.kr/ct/search?keyword=${encodeURIComponent(query)}`;
 }
 
 function yogiyoSearchUrl(location?: string) {
