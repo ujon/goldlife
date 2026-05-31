@@ -9,52 +9,8 @@ type StandardRegionRow = {
 	locat_rm?: string;
 };
 
-type RegionCodeRow = {
-	code?: string;
-	name?: string;
-};
-
 const PUBLIC_DATA_BASE = 'https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList';
-const REGION_CODE_BASE = 'https://grpc-proxy-server-mkvo6j4wsq-du.a.run.app/v1/regcodes';
 const LOCATION_SUGGESTION_LIMIT = 8;
-const REGION_CODE_PREFIXES = [
-	'11',
-	'26',
-	'27',
-	'28',
-	'29',
-	'30',
-	'31',
-	'36',
-	'41',
-	'43',
-	'44',
-	'46',
-	'47',
-	'48',
-	'50',
-	'51',
-	'52'
-];
-const REGION_PREFIX_ALIASES = [
-	{ prefix: '11', aliases: ['서울'] },
-	{ prefix: '26', aliases: ['부산'] },
-	{ prefix: '27', aliases: ['대구'] },
-	{ prefix: '28', aliases: ['인천'] },
-	{ prefix: '29', aliases: ['광주'] },
-	{ prefix: '30', aliases: ['대전'] },
-	{ prefix: '31', aliases: ['울산'] },
-	{ prefix: '36', aliases: ['세종'] },
-	{ prefix: '41', aliases: ['경기'] },
-	{ prefix: '43', aliases: ['충북', '충청북도'] },
-	{ prefix: '44', aliases: ['충남', '충청남도'] },
-	{ prefix: '46', aliases: ['전남', '전라남도'] },
-	{ prefix: '47', aliases: ['경북', '경상북도'] },
-	{ prefix: '48', aliases: ['경남', '경상남도'] },
-	{ prefix: '50', aliases: ['제주'] },
-	{ prefix: '51', aliases: ['강원'] },
-	{ prefix: '52', aliases: ['전북', '전라북도'] }
-];
 const FALLBACK_LOCATIONS: LocationSuggestion[] = [
 	{ id: 'fallback-seongsu', label: '서울 성동구 성수동', source: 'fallback' },
 	{ id: 'fallback-yeonnam', label: '서울 마포구 연남동', source: 'fallback' },
@@ -64,6 +20,10 @@ const FALLBACK_LOCATIONS: LocationSuggestion[] = [
 	{ id: 'fallback-itaewon', label: '서울 용산구 이태원', source: 'fallback' },
 	{ id: 'fallback-hannam', label: '서울 용산구 한남동', source: 'fallback' },
 	{ id: 'fallback-bukchon', label: '서울 종로구 북촌', source: 'fallback' },
+	{ id: 'fallback-seongnam', label: '경기 성남시', source: 'fallback' },
+	{ id: 'fallback-bundang', label: '경기 성남시 분당구', source: 'fallback' },
+	{ id: 'fallback-sujeong', label: '경기 성남시 수정구', source: 'fallback' },
+	{ id: 'fallback-jungwon', label: '경기 성남시 중원구', source: 'fallback' },
 	{ id: 'fallback-pangyo', label: '경기 성남시 분당구 판교', source: 'fallback' },
 	{ id: 'fallback-jeongja', label: '경기 성남시 분당구 정자동', source: 'fallback' },
 	{ id: 'fallback-seohyeon', label: '경기 성남시 분당구 서현동', source: 'fallback' },
@@ -83,7 +43,6 @@ const FALLBACK_LOCATIONS: LocationSuggestion[] = [
 	{ id: 'fallback-gwangju-chungjangro', label: '광주 동구 충장로', source: 'fallback' },
 	{ id: 'fallback-jeju', label: '제주 제주시 애월읍', source: 'fallback' }
 ];
-const regionCodeRowsByPrefix = new Map<string, Promise<RegionCodeRow[]>>();
 let publicDataDisabled = false;
 
 export async function searchLocations(query: string): Promise<LocationSuggestion[]> {
@@ -92,17 +51,15 @@ export async function searchLocations(query: string): Promise<LocationSuggestion
 	if (!normalized) return FALLBACK_LOCATIONS.slice(0, 5);
 	const canSearchNationwide = compactLocation(normalized).length >= 2;
 
-	const [regionCodeSuggestions, publicDataSuggestions, fallbackSuggestions] = await Promise.all([
-		canSearchNationwide ? searchRegionCodeLocations(normalized) : Promise.resolve([]),
+	const [publicDataSuggestions, fallbackSuggestions] = await Promise.all([
 		canSearchNationwide ? searchPublicDataLocations(normalized, rawQuery) : Promise.resolve([]),
 		Promise.resolve(searchFallbackLocations(normalized))
 	]);
 
-	return mergeLocationSuggestions([
-		...regionCodeSuggestions,
-		...publicDataSuggestions,
-		...fallbackSuggestions
-	]).slice(0, LOCATION_SUGGESTION_LIMIT);
+	return mergeLocationSuggestions([...publicDataSuggestions, ...fallbackSuggestions]).slice(
+		0,
+		LOCATION_SUGGESTION_LIMIT
+	);
 }
 
 async function searchPublicDataLocations(
@@ -155,69 +112,6 @@ async function searchPublicDataLocationVariant(
 	} catch {
 		return [];
 	}
-}
-
-async function searchRegionCodeLocations(query: string): Promise<LocationSuggestion[]> {
-	const compactQuery = compactLocation(query);
-	const queryTokens = locationTokens(query);
-	const prefixes = regionCodePrefixesForQuery(query);
-	const settledRows = await Promise.allSettled(prefixes.map((prefix) => getRegionCodeRows(prefix)));
-	const rows = settledRows.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
-
-	return rows
-		.map((row, index) => {
-			const rawLabel = displayRegionName(row.name ?? '');
-			const label = regionUnitLabel(rawLabel);
-			const score = Math.max(
-				locationLabelMatchScore(rawLabel, compactQuery, queryTokens),
-				locationLabelMatchScore(label, compactQuery, queryTokens)
-			);
-
-			return { row, index, label, score };
-		})
-		.filter((item) => item.score > 0 && isSelectableRegion(item.label))
-		.sort((a, b) => b.score - a.score || a.index - b.index)
-		.map(
-			(item): LocationSuggestion => ({
-				id: item.row.code ? `region-code-${item.row.code}` : `region-code-${item.index}`,
-				label: item.label,
-				source: 'region_code'
-			})
-		);
-}
-
-function getRegionCodeRows(prefix: string) {
-	const cached = regionCodeRowsByPrefix.get(prefix);
-	if (cached) return cached;
-
-	const pending = fetchRegionCodeRows(prefix).catch(() => []);
-	regionCodeRowsByPrefix.set(prefix, pending);
-	return pending;
-}
-
-async function fetchRegionCodeRows(prefix: string): Promise<RegionCodeRow[]> {
-	const url = new URL(REGION_CODE_BASE);
-	url.search = new URLSearchParams({
-		regcode_pattern: `${prefix}*`,
-		is_ignore_zero: 'true'
-	}).toString();
-
-	const response = await loggedFetch({
-		provider: 'region_code',
-		kind: 'api',
-		operation: 'region-code.prefix',
-		url,
-		init: { signal: AbortSignal.timeout(2500) }
-	});
-	if (!response.ok) throw new Error(`Region code ${response.status}`);
-
-	const payload = (await response.json()) as { regcodes?: unknown };
-	if (!Array.isArray(payload.regcodes)) return [];
-
-	return payload.regcodes.filter((row): row is RegionCodeRow => {
-		if (!row || typeof row !== 'object') return false;
-		return typeof (row as RegionCodeRow).name === 'string';
-	});
 }
 
 function publicDataUrl(serviceKey: string, query: string) {
@@ -325,36 +219,6 @@ function buildPublicDataQueryVariants(rawQuery: string, normalizedQuery: string)
 		.filter(Boolean);
 
 	return Array.from(new Set(variants));
-}
-
-function regionCodePrefixesForQuery(query: string) {
-	const compactQuery = compactLocation(query);
-	const matchedPrefixes = REGION_PREFIX_ALIASES.filter((region) =>
-		region.aliases.some((alias) => compactQuery.includes(compactLocation(alias)))
-	).map((region) => region.prefix);
-
-	return matchedPrefixes.length ? matchedPrefixes : REGION_CODE_PREFIXES;
-}
-
-function displayRegionName(value: string) {
-	return normalizeLocationQuery(value);
-}
-
-function regionUnitLabel(value: string) {
-	const tokens = value.split(/\s+/).filter(Boolean);
-	const last = tokens.at(-1);
-	const previous = tokens.at(-2);
-
-	if (last && previous && /리$/.test(last) && /(읍|면)$/.test(previous)) {
-		return tokens.slice(0, -1).join(' ');
-	}
-
-	return tokens.join(' ');
-}
-
-function isSelectableRegion(value: string) {
-	const last = value.split(/\s+/).filter(Boolean).at(-1) ?? '';
-	return /(시|군|구|동|읍|면|\d가|가)$/.test(last);
 }
 
 function normalizeAdministrativeNames(value: string) {
