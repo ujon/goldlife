@@ -176,7 +176,8 @@ export function applyTimeUtilization(
 	session: RecommendationSession
 ): RecommendationCard[] {
 	const availableMinutes = availableSessionMinutes(session);
-	if (!availableMinutes) return cards.map((card) => fillDwellTimes(card, session));
+	if (!availableMinutes)
+		return cards.map((card) => applyBudgetUtilization(fillDwellTimes(card, session), session));
 
 	return cards.map((card) => {
 		const filled = fillDwellTimes(card, session);
@@ -204,16 +205,53 @@ export function applyTimeUtilization(
 		const timeUsageText = `사용 가능 시간 ${formatDurationLabel(availableMinutes)} 중 약 ${formatDurationLabel(plannedMinutes)} 사용`;
 		const utilizationBadge =
 			plannedMinutes >= availableMinutes * 0.8 ? '시간 꽉 채움' : '여유 시간 남김';
+		const budgeted = applyBudgetUtilization(
+			{
+				...filled,
+				items,
+				estimatedDuration: formatDurationLabel(plannedMinutes),
+				timeUsageText,
+				routeDetail: appendUniqueSummary(filled.routeDetail ?? filled.routeSummary, timeUsageText),
+				badges: [...new Set([utilizationBadge, '체류시간 예측', ...filled.badges])].slice(0, 8)
+			},
+			session
+		);
 
-		return {
-			...filled,
-			items,
-			estimatedDuration: formatDurationLabel(plannedMinutes),
-			timeUsageText,
-			routeDetail: appendUniqueSummary(filled.routeDetail ?? filled.routeSummary, timeUsageText),
-			badges: [...new Set([utilizationBadge, '체류시간 예측', ...filled.badges])].slice(0, 8)
-		};
+		return budgeted;
 	});
+}
+
+function applyBudgetUtilization(
+	card: RecommendationCard,
+	session: RecommendationSession
+): RecommendationCard {
+	const budget = session.budgetTotal;
+	if (!budget || budget <= 0) return card;
+	const itemCost = card.items.reduce((sum, item) => sum + Math.max(0, item.price ?? 0), 0);
+	const currentCost = Math.max(card.estimatedCost, itemCost);
+	const targetCost = targetBudgetCost(budget, card);
+	const plannedCost = Math.min(budget, Math.max(currentCost, targetCost));
+	const budgetUsageText = `예산 ${formatKrw(budget)} 중 약 ${formatKrw(plannedCost)} 사용`;
+	const badge = plannedCost >= budget * 0.8 ? '예산 적극 활용' : '예산 여유';
+
+	return {
+		...card,
+		estimatedCost: plannedCost,
+		budgetText:
+			plannedCost <= budget
+				? `${budgetUsageText}하도록 옵션과 식사까지 잡았어`
+				: budgetText(budget, plannedCost),
+		perPersonText: perPersonText(plannedCost, partyCount(session.situation)),
+		routeDetail: appendUniqueSummary(card.routeDetail ?? card.routeSummary, budgetUsageText),
+		badges: [...new Set([badge, ...card.badges])].slice(0, 8)
+	};
+}
+
+function targetBudgetCost(budget: number, card: RecommendationCard) {
+	if (card.items.some((item) => item.slot === 'flight')) return Math.floor(budget * 0.95);
+	if (budget <= 30000) return Math.floor(budget * 0.9);
+	if (budget <= 100000) return Math.floor(budget * 0.85);
+	return Math.floor(budget * 0.82);
 }
 
 function fillDwellTimes(card: RecommendationCard, session: RecommendationSession) {

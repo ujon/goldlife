@@ -1304,6 +1304,7 @@
 						title: activity.title,
 						price: activity.price ?? item.price,
 						source: activity.source,
+						sourceName: activity.sourceName ?? item.sourceName,
 						outboundUrl: activity.outboundUrl ?? item.outboundUrl,
 						reservationUrl: activity.reservationUrl ?? activity.outboundUrl ?? item.reservationUrl,
 						mapUrl: activity.mapUrl ?? item.mapUrl,
@@ -1328,6 +1329,7 @@
 						title: restaurant.title,
 						price: restaurant.price ?? item.price,
 						source: restaurant.source,
+						sourceName: restaurant.sourceName ?? item.sourceName,
 						outboundUrl: restaurant.outboundUrl ?? item.outboundUrl,
 						reservationUrl:
 							restaurant.reservationUrl ?? restaurant.outboundUrl ?? item.reservationUrl,
@@ -1426,6 +1428,7 @@
 			title: flight.title,
 			price: flight.price ?? fallback?.price ?? 0,
 			source: flight.source,
+			sourceName: flight.sourceName ?? '네이버항공',
 			outboundUrl: flight.outboundUrl ?? fallback?.outboundUrl ?? 'https://flight.naver.com',
 			reservationUrl: flight.reservationUrl ?? flight.outboundUrl ?? fallback?.reservationUrl,
 			availabilityText: [
@@ -2169,11 +2172,28 @@
 		};
 	}
 
-	function sourceLabel(source: RecommendationCard['items'][number]['source']) {
-		if (source === 'myrealtrip') return '마이리얼트립';
-		if (source === 'api_fuse') return 'API Fuse';
-		if (source === 'genrank') return 'GenRank';
-		return 'SAI';
+	function sourceLabel(item: RecommendationItem) {
+		if (item.sourceName) return item.sourceName;
+		const text = [
+			item.outboundUrl,
+			item.reservationUrl,
+			item.mapUrl,
+			item.routeMapUrl,
+			item.availabilityText
+		]
+			.filter(Boolean)
+			.join(' ');
+		const tagsAndTitle = [item.title, item.address, item.availabilityText]
+			.filter(Boolean)
+			.join(' ');
+		if (/myrealtrip\.com/i.test(text) || item.source === 'myrealtrip') return '마이리얼트립';
+		if (/catchtable/i.test(text) || /캐치테이블|예약 슬롯/.test(tagsAndTitle)) return '캐치테이블';
+		if (/yogiyo/i.test(text) || /요기요|배달/.test(tagsAndTitle)) return '요기요';
+		if (/flight\.naver/i.test(text) || item.slot === 'flight') return '네이버항공';
+		if (/naver/i.test(text) || /네이버지도/.test(tagsAndTitle)) return '네이버지도';
+		if (/kakao|map\.kakao/i.test(text) || /카카오맵/.test(tagsAndTitle)) return '카카오맵';
+		if (item.source === 'genrank') return 'GenRank 트렌드';
+		return '추천 후보';
 	}
 
 	function resultTypeLabel(card: RecommendationCard) {
@@ -2285,7 +2305,7 @@
 		return sourceItems.map((item, index) => ({
 			key: `${item.title}-${item.thumbnailUrl ?? index}`,
 			title: item.title,
-			subtitle: sourceLabel(item.source),
+			subtitle: sourceLabel(item),
 			imageUrl: item.thumbnailUrl ?? '',
 			href: itemPrimaryUrl(item) ?? cardReservationUrl(card),
 			tone: (index % 4) + 1
@@ -2351,18 +2371,30 @@
 	function itemDetailActions(item: RecommendationItem): DetailAction[] {
 		const actions: DetailAction[] = [];
 		const detailUrl = reservationUrlForItem(item);
-		addUniqueAction(actions, {
-			key: 'route',
-			label: '경로 보기',
-			url: itemRouteUrl(item),
-			variant: 'primary'
-		});
-		addUniqueAction(actions, {
-			key: 'map',
-			label: '위치 보기',
-			url: itemLocationUrl(item),
-			variant: 'secondary'
-		});
+		const routeUrl = itemRouteUrl(item);
+		const locationUrl = itemLocationUrl(item);
+		addUniqueAction(
+			actions,
+			routeUrl
+				? {
+						key: 'route',
+						label: '경로 보기',
+						url: routeUrl,
+						variant: 'primary'
+					}
+				: null
+		);
+		addUniqueAction(
+			actions,
+			locationUrl
+				? {
+						key: 'map',
+						label: '위치 보기',
+						url: locationUrl,
+						variant: routeUrl ? 'secondary' : 'primary'
+					}
+				: null
+		);
 		addUniqueAction(
 			actions,
 			detailUrl
@@ -2407,6 +2439,8 @@
 	function itemLocationUrl(item: RecommendationItem) {
 		if (item.routeMapUrl) return item.routeMapUrl;
 		if (item.lat != null && item.lng != null) return kakaoMapUrl(item.title, item.lat, item.lng);
+		if (item.source === 'myrealtrip' && !item.address && !item.mapUrl) return '';
+		if (item.mapUrl) return item.mapUrl;
 		return kakaoSearchUrl(item.address ?? item.title);
 	}
 
@@ -2594,7 +2628,7 @@
 						</div>
 					{/if}
 					<div class="course-item-main">
-						<span>{sourceLabel(item.source)}</span>
+						<span>{sourceLabel(item)}</span>
 						<strong>{item.title}</strong>
 						{#if compactItemMeta(item)}
 							<small>{compactItemMeta(item)}</small>

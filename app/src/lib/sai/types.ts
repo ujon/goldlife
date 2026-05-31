@@ -150,6 +150,7 @@ export type RecommendationItem = {
 	title: string;
 	price: number;
 	source: 'myrealtrip' | 'api_fuse' | 'genrank' | 'sai';
+	sourceName?: string;
 	outboundUrl: string;
 	reservationUrl?: string;
 	mapUrl?: string;

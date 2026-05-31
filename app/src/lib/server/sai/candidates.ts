@@ -221,6 +221,7 @@ async function getMyrealtripActivities(input: CandidateInput, statuses: Provider
 				title,
 				price,
 				source: 'myrealtrip',
+				sourceName: '마이리얼트립',
 				outboundUrl,
 				thumbnailUrl: thumbnailFromRow(item) || undefined,
 				tags: ['예약 후보', '액티비티'],
@@ -390,6 +391,7 @@ function flightRowToCandidate(
 		title,
 		price,
 		source: 'api_fuse',
+		sourceName: '네이버항공',
 		outboundUrl: naverFlightUrl(plan),
 		reservationUrl: naverFlightUrl(plan),
 		departureAirport: plan.departure,
@@ -418,6 +420,7 @@ function fallbackFlightCandidates(input: CandidateInput): FlightCandidate[] {
 			id: `fallback-flight-${plan.arrival}-${index}`,
 			title: `${plan.departure}→${plan.arrival} ${plan.destinationLabel} 항공편 확인`,
 			source: 'sai' as const,
+			sourceName: '네이버항공 검색',
 			outboundUrl: naverFlightUrl(plan),
 			reservationUrl: naverFlightUrl(plan),
 			departureAirport: plan.departure,
@@ -473,6 +476,7 @@ async function getCatchtableRestaurants(input: CandidateInput, apiKey: string) {
 			title: stringValue(item.name) || stringValue(item.shopName) || '캐치테이블 맛집',
 			price: numberValue(item.averagePrice),
 			source: 'api_fuse',
+			sourceName: '캐치테이블',
 			outboundUrl,
 			reservationUrl: outboundUrl,
 			mapUrl: kakaoSearchUrl(stringValue(item.name) || stringValue(item.shopName) || shopRef),
@@ -682,15 +686,17 @@ async function enrichActivityCandidates(
 	const apifuseApiKey = env.API_FUSE_API_KEY;
 	return Promise.all(
 		candidates.slice(0, 8).map(async (candidate) => {
+			const isMyrealtrip = candidate.source === 'myrealtrip';
 			const [booking, place] = await Promise.all([
 				getMyrealtripAvailability(input, candidate, myrealtripApiKey),
-				apifuseApiKey ? findKakaoPlace(input, candidate.title, apifuseApiKey) : null
+				apifuseApiKey ? findCandidatePlace(input, candidate, apifuseApiKey) : null
 			]);
-			return withOperatingInfo(
+			const enriched = withOperatingInfo(
 				{
 					...candidate,
 					reservationUrl: candidate.outboundUrl,
-					mapUrl: place?.mapUrl ?? candidate.mapUrl,
+					sourceName: candidate.sourceName ?? sourceNameForCandidate(candidate),
+					mapUrl: place?.mapUrl ?? (isMyrealtrip ? undefined : candidate.mapUrl),
 					address: place?.address ?? candidate.address,
 					lat: place?.lat ?? candidate.lat,
 					lng: place?.lng ?? candidate.lng,
@@ -699,6 +705,7 @@ async function enrichActivityCandidates(
 				},
 				operatingInfoForCandidate(input, place ?? candidate, 'activity')
 			);
+			return isMyrealtrip && !place ? stripUnverifiedMapInfo(enriched) : enriched;
 		})
 	);
 }
@@ -801,6 +808,7 @@ async function getYogiyoRestaurants(input: CandidateInput, apiKey: string) {
 				title: stringValue(item.name) || '요기요 음식점',
 				price: minOrder ? minOrder + (deliveryFee ?? 0) : undefined,
 				source: 'api_fuse',
+				sourceName: '요기요',
 				outboundUrl: stringValue(item.web_url) || yogiyoSearchUrl(input.session.location?.label),
 				mapUrl: kakaoSearchUrl(stringValue(item.name) || '요기요 음식점'),
 				address: stringValue(item.address),
@@ -956,6 +964,98 @@ async function findKakaoPlace(input: CandidateInput, query: string, apiKey: stri
 	if (!first) return null;
 	const detail = await getPlaceDetail(first, apiKey);
 	return placeRowToGeo(detail ? { ...first, ...detail } : first, query);
+}
+
+async function findCandidatePlace(
+	input: CandidateInput,
+	candidate: ActivityCandidate,
+	apiKey: string
+) {
+	const query =
+		candidate.source === 'myrealtrip'
+			? [input.session.location?.label, candidate.title].filter(Boolean).join(' ')
+			: candidate.title;
+	const place = await findKakaoPlace(input, query, apiKey);
+	if (!place) return null;
+	if (candidate.source !== 'myrealtrip') return place;
+	return isReliableMyrealtripPlace(input, candidate, place) ? place : null;
+}
+
+function isReliableMyrealtripPlace(
+	input: CandidateInput,
+	candidate: ActivityCandidate,
+	place: GeoCandidate
+) {
+	if (place.lat == null || place.lng == null) return false;
+	const placeText = normalizeSearchText([place.title, place.address].filter(Boolean).join(' '));
+	const titleTokens = searchableTokens(candidate.title);
+	const hasTitleOverlap = titleTokens.some((token) => placeText.includes(token));
+	const locationTokens = searchableTokens(input.session.location?.label ?? '').slice(0, 3);
+	const hasLocationOverlap =
+		!locationTokens.length ||
+		locationTokens.some((token) => normalizeSearchText(place.address ?? '').includes(token));
+	return hasTitleOverlap && hasLocationOverlap;
+}
+
+function stripUnverifiedMapInfo(candidate: ActivityCandidate): ActivityCandidate {
+	return {
+		...candidate,
+		mapUrl: undefined,
+		address: undefined,
+		lat: undefined,
+		lng: undefined,
+		travelMinutes: undefined,
+		travelTimeText: undefined,
+		travelDistanceMeters: undefined,
+		routeMapUrl: undefined,
+		arrivalTimeText: undefined,
+		operatingStatus: 'unknown',
+		openingHoursText: undefined,
+		availabilityText: candidate.availabilityText ?? '마이리얼트립 상세에서 위치 확인 필요',
+		tags: [...new Set([...candidate.tags, '위치 상세 확인 필요'])]
+	};
+}
+
+function sourceNameForCandidate(
+	candidate: Pick<ActivityCandidate, 'source' | 'sourceName' | 'tags'>
+) {
+	if (candidate.sourceName) return candidate.sourceName;
+	if (candidate.source === 'myrealtrip') return '마이리얼트립';
+	if (candidate.tags.includes('네이버지도')) return '네이버지도';
+	if (candidate.tags.includes('카카오맵')) return '카카오맵';
+	if (candidate.source === 'genrank') return 'GenRank 트렌드';
+	return '카카오맵 검색';
+}
+
+function normalizeSearchText(text: string) {
+	return text.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase();
+}
+
+function searchableTokens(text: string) {
+	const stopWords = new Set([
+		'서울',
+		'경기',
+		'부산',
+		'대구',
+		'인천',
+		'광주',
+		'대전',
+		'울산',
+		'세종',
+		'제주',
+		'원데이',
+		'클래스',
+		'티켓',
+		'입장권',
+		'체험',
+		'투어',
+		'예약',
+		'후보'
+	]);
+	return text
+		.split(/[^\p{L}\p{N}]+/u)
+		.map((token) => token.trim().toLowerCase())
+		.filter((token) => token.length >= 2 && !stopWords.has(token));
 }
 
 async function searchKakaoPlaces(
@@ -1306,6 +1406,7 @@ function fallbackActivities(input: CandidateInput): ActivityCandidate[] {
 						: '실내 원데이 클래스',
 				price: baby ? 18000 : 36000,
 				source: 'sai',
+				sourceName: '카카오맵 검색',
 				outboundUrl: 'https://map.kakao.com',
 				mapUrl: kakaoSearchUrl(baby ? '영유아 동반 실내 체험관' : '실내 원데이 클래스'),
 				tags: baby ? ['유모차', '실내'] : ['온보딩 답변 반영', '예약 후보']
@@ -1318,6 +1419,7 @@ function fallbackActivities(input: CandidateInput): ActivityCandidate[] {
 				title: baby ? '실내 식물원 산책' : '짧은 전시 또는 팝업',
 				price: baby ? 16000 : 22000,
 				source: 'sai',
+				sourceName: '카카오맵 검색',
 				outboundUrl: 'https://map.kakao.com',
 				mapUrl: kakaoSearchUrl(baby ? '실내 식물원 산책' : '짧은 전시 팝업'),
 				tags: ['날씨 fallback', '짧은 동선']
@@ -1336,6 +1438,7 @@ function fallbackRestaurants(input: CandidateInput): RestaurantCandidate[] {
 				title: baby ? '넓은 좌석 키즈 프렌들리 카페' : '캐주얼 파스타 다이닝',
 				price: baby ? 32000 : 42000,
 				source: 'sai',
+				sourceName: '캐치테이블 검색',
 				outboundUrl: 'https://app.catchtable.co.kr',
 				reservationUrl: 'https://app.catchtable.co.kr',
 				mapUrl: kakaoSearchUrl(baby ? '키즈 프렌들리 카페' : '캐주얼 파스타 다이닝'),
@@ -1949,6 +2052,11 @@ function placeRowToGeo(row: Record<string, unknown>, fallbackTitle: string): Geo
 	return { title, lat, lng, address, mapUrl };
 }
 
+function mapProviderLabel(provider: string) {
+	if (provider === 'naver') return '네이버지도';
+	return '카카오맵';
+}
+
 function placeRowToActivity(
 	input: CandidateInput,
 	row: Record<string, unknown>,
@@ -1967,6 +2075,7 @@ function placeRowToActivity(
 			id,
 			title: geo.title,
 			source: 'api_fuse' as const,
+			sourceName: mapProviderLabel(provider),
 			outboundUrl: geo.mapUrl,
 			mapUrl: geo.mapUrl,
 			address: geo.address,
@@ -1974,11 +2083,7 @@ function placeRowToActivity(
 			lng: geo.lng,
 			availabilityText: '지도 장소 후보 확인됨',
 			thumbnailUrl: thumbnailFromRow(row) || undefined,
-			tags: [
-				provider === 'naver' ? '네이버지도' : '카카오맵',
-				category || '장소 후보',
-				'APIFuse'
-			].filter(Boolean)
+			tags: [mapProviderLabel(provider), category || '장소 후보', '장소 검색'].filter(Boolean)
 		},
 		operatingInfoForRow(input, row, 'activity')
 	);
@@ -2002,6 +2107,7 @@ function placeRowToRestaurant(
 			id,
 			title: geo.title,
 			source: 'api_fuse' as const,
+			sourceName: mapProviderLabel(provider),
 			outboundUrl: geo.mapUrl,
 			mapUrl: geo.mapUrl,
 			address: geo.address,
@@ -2009,11 +2115,7 @@ function placeRowToRestaurant(
 			lng: geo.lng,
 			availabilityText: '지도 장소 후보 확인됨',
 			thumbnailUrl: thumbnailFromRow(row) || undefined,
-			tags: [
-				provider === 'naver' ? '네이버지도' : '카카오맵',
-				category || '맛집 후보',
-				'APIFuse'
-			].filter(Boolean),
+			tags: [mapProviderLabel(provider), category || '맛집 후보', '장소 검색'].filter(Boolean),
 			reservationHint: '지도 상세 확인'
 		},
 		operatingInfoForRow(input, row, 'food')

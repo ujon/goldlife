@@ -31,6 +31,7 @@ export type ActivityCandidate = {
 	title: string;
 	price?: number;
 	source: 'myrealtrip' | 'genrank' | 'api_fuse' | 'sai';
+	sourceName?: string;
 	outboundUrl?: string;
 	reservationUrl?: string;
 	mapUrl?: string;
@@ -55,6 +56,7 @@ export type RestaurantCandidate = {
 	title: string;
 	price?: number;
 	source: 'api_fuse' | 'sai';
+	sourceName?: string;
 	outboundUrl?: string;
 	reservationUrl?: string;
 	mapUrl?: string;
@@ -97,6 +99,7 @@ export type FlightCandidate = {
 	title: string;
 	price?: number;
 	source: 'api_fuse' | 'sai';
+	sourceName?: string;
 	outboundUrl?: string;
 	reservationUrl?: string;
 	departureAirport: string;
