@@ -17,10 +17,22 @@ export function getSql() {
 
 	client ??= postgres(env.DATABASE_URL, {
 		max: 4,
-		prepare: false
+		prepare: false,
+		ssl: shouldRequireSsl(env.DATABASE_URL) ? 'require' : false
 	});
 
 	return client;
+}
+
+function shouldRequireSsl(databaseUrl: string) {
+	try {
+		const url = new URL(databaseUrl);
+		if (url.searchParams.has('sslmode') || url.searchParams.has('ssl')) return false;
+		if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return false;
+		return url.hostname.endsWith('.supabase.co') || url.hostname.endsWith('.pooler.supabase.com');
+	} catch {
+		return false;
+	}
 }
 
 export async function ensureSchema() {
