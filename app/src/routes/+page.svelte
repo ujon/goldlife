@@ -83,6 +83,11 @@
 		model?: string;
 		fallbackReason?: string;
 	};
+	type SaiScreenVoicePlan = {
+		key: string;
+		text: string;
+		listen: Exclude<SpeechTarget, 'onboarding'> | null;
+	};
 	type LocationSearchResult = {
 		suggestions: LocationSuggestion[];
 	};
@@ -299,7 +304,7 @@
 	let speechTranscript = $state('');
 	let speechMessage = $state('');
 	let recommendationSpeechCaptions = $state<Partial<Record<SpeechTarget, string>>>({});
-	let onboardingSpeaking = $state(false);
+	let saiSpeaking = $state(false);
 	let onboardingVoicePaused = $state(false);
 	let onboardingIntroVisible = $state(false);
 	let onboardingAnswerInput = $state('');
@@ -309,17 +314,53 @@
 	let locationSearchRequestId = 0;
 	let activeRecognition: WebSpeechRecognition | null = null;
 	let onboardingSilenceTimer: ReturnType<typeof setTimeout> | null = null;
-	let onboardingTtsRequestId = 0;
-	let activeOnboardingAudio: HTMLAudioElement | null = null;
-	let activeOnboardingAudioUrl = '';
+	let saiSpeechRequestId = 0;
+	let activeSaiAudio: HTMLAudioElement | null = null;
+	let activeSaiAudioUrl = '';
+	// Plain (non-reactive) dedupe key so the per-screen voice effect speaks a line
+	// only once per screen entry. Seeded with 'auth' so the very first cold load
+	// (no user gesture yet -> autoplay blocked) does not fire a wasted TTS request.
+	let lastVoicedKey = 'auth';
 
 	if (browser) {
 		void autoLoginInDevelopment();
 	}
 
+	// Single source of truth for the recommendation coach screens: the markup snippet
+	// and the spoken (TTS) line both read from here so the two never drift apart.
+	const recommendationCoachContent = {
+		time: {
+			eyebrow: '추천 질문 1/4',
+			title: '시간 얼마나 있어?',
+			body: '한 시간이든 반나절이든 괜찮아. 딱 가능한 만큼만 알려줘.',
+			target: 'time' as const
+		},
+		situation: {
+			eyebrow: '추천 질문 2/4',
+			title: '오늘은 누구랑 같이 움직여?',
+			body: '엄마, 친구, 아내, 아이처럼 함께할 사람을 모두 골라줘. 관계별로 다르게 맞춰볼게.',
+			target: 'situation' as const
+		},
+		budget: {
+			eyebrow: '추천 질문 3/4',
+			title: '오늘 예산은 얼마야?',
+			body: '여러 명이어도 총 예산으로 알려줘. 그 금액 안에서 맞춰볼게.',
+			target: 'budget' as const
+		},
+		extra: {
+			eyebrow: '추천 질문 4/4',
+			title: '더 하고 싶은 말 있어?',
+			body: '원하는 분위기, 피하고 싶은 것, 꼭 챙길 조건이 있으면 말해줘. 없으면 바로 넘어가도 돼.',
+			target: 'extra' as const
+		}
+	} satisfies Record<
+		string,
+		{ eyebrow: string; title: string; body: string; target: SpeechTarget }
+	>;
+
 	let currentOnboardingQuestion = $derived(onboardingQuestions[onboardingIndex]);
 	let onboardingMascotState = $derived(
-		onboardingSpeaking ? 'talking' : listeningFor === 'onboarding' ? 'listening' : 'idle'
+		saiSpeaking ? 'talking' : listeningFor === 'onboarding' ? 'listening' : 'idle'
 	);
 	let currentOnboardingFreeformAnswer = $derived(
 		profile && currentOnboardingQuestion.id !== 'mbtiType'
@@ -341,7 +382,7 @@
 				: ''
 	);
 	let onboardingVoiceCaption = $derived(
-		onboardingSpeaking
+		saiSpeaking
 			? '질문 읽는 중이야.'
 			: listeningFor === 'onboarding'
 				? speechTranscript
@@ -375,11 +416,13 @@
 		recommendations.find((card) => card.id === selectedRecommendationId) ?? null
 	);
 	let mascotState = $derived(
-		screen === 'generating'
-			? 'thinking'
-			: screen === 'results' || screen === 'resultDetail'
-				? 'happy'
-				: 'idle'
+		saiSpeaking
+			? 'talking'
+			: screen === 'generating'
+				? 'thinking'
+				: screen === 'results' || screen === 'resultDetail'
+					? 'happy'
+					: 'idle'
 	);
 	let progress = $derived(
 		getProgress(screen, onboardingIndex, followupIndex, followupQuestions.length)
@@ -387,6 +430,114 @@
 	let progressPercent = $derived(
 		progress.total ? `${Math.min(100, (progress.current / progress.total) * 100)}%` : '0%'
 	);
+
+	const onboardingIntroContent = {
+		eyebrow: '온보딩',
+		title: '안녕, 나는 사이야.',
+		body: '너한테 더 잘 맞는 선택지를 찾아주려고, 먼저 너를 조금 알아보는 질문을 몇 개만 할게.'
+	} as const;
+
+	const onboardingIntroVoicePlan = {
+		key: 'onboarding-intro',
+		text: `${onboardingIntroContent.title} ${onboardingIntroContent.body}`,
+		listen: null
+	} satisfies SaiScreenVoicePlan;
+
+	// Followup coach content is dynamic (question + source-specific reaction), so it is a
+	// derived value rather than part of the static recommendationCoachContent map above.
+	let followupCoachContent = $derived({
+		eyebrow: `추가 질문 ${followupIndex + 1}/${followupQuestions.length}`,
+		title: currentFollowup?.prompt ?? '하나만 더 물어볼게',
+		body:
+			followupSource === 'exaone'
+				? 'EXAONE이 더 필요한 맥락만 골라서 물어보는 중이야.'
+				: followupSource === 'openai'
+					? 'AI가 추천 전에 딱 필요한 맥락만 확인하는 중이야.'
+					: '방금 말한 시간, 돈, 구성원은 다시 안 물어볼게.',
+		target: 'followup' as const
+	});
+
+	// What SAI should say (and whether to listen afterwards) on the current screen.
+	// `key` dedupes repeated entry; `listen` is the recognition target for screens that
+	// take a spoken answer. Returns null for screens SAI does not narrate.
+	let saiScreenVoice = $derived.by<SaiScreenVoicePlan | null>(() => {
+		switch (screen) {
+			case 'auth':
+				return {
+					key: 'auth',
+					text: '오늘 뭐하지? 시간과 돈 사이에서 지금 제일 괜찮은 선택지를 찾아줄게.',
+					listen: null
+				};
+			case 'location':
+				return {
+					key: 'location',
+					text: '지금 어디쯤 있어? 근처로 찾아볼게. 동네 이름으로 알려줘도 돼.',
+					listen: null
+				};
+			case 'home': {
+				const name = profile?.email.split('@')[0] ?? '';
+				return {
+					key: `home:${name}`,
+					text: `${name}야, 오늘 뭐하지? 지금 쓸 수 있는 시간과 총 예산만 알려줘.`,
+					listen: null
+				};
+			}
+			case 'time':
+			case 'situation':
+			case 'budget':
+			case 'extra': {
+				const content = recommendationCoachContent[screen];
+				return { key: screen, text: `${content.title} ${content.body}`, listen: content.target };
+			}
+			case 'followup':
+				return {
+					key: `followup:${followupIndex}:${followupCoachContent.title}`,
+					text: `${followupCoachContent.title} ${followupCoachContent.body}`,
+					listen: 'followup'
+				};
+			case 'generating':
+				return {
+					key: 'generating',
+					text: 'AI 친구들이 잠깐 회의 중이야. 날씨, 지도, 맛집, 액티비티 후보를 시간과 예산 안에서 맞춰보고 있어.',
+					listen: null
+				};
+			case 'results':
+				return { key: 'results', text: '이 3개로 추렸어.', listen: null };
+			default:
+				return null;
+		}
+	});
+
+	// Speak the current screen's line via TTS whenever the screen (or its line) changes.
+	$effect(() => {
+		if (!browser) return;
+		if (screen === 'onboarding') return;
+		const plan = saiScreenVoice;
+		if (!plan) {
+			stopSaiAudio();
+			saiSpeaking = false;
+			return;
+		}
+		if (plan.key === lastVoicedKey) return;
+		playSaiScreenVoice(plan);
+	});
+
+	function playSaiScreenVoice(plan: SaiScreenVoicePlan, options: { force?: boolean } = {}) {
+		if (!browser) return;
+		if (!options.force && plan.key === lastVoicedKey) return;
+		lastVoicedKey = plan.key;
+		void runScreenVoice(plan);
+	}
+
+	function replayRecommendationVoice(target: SpeechTarget) {
+		if (target === 'onboarding') return;
+		const plan = saiScreenVoice;
+		if (plan?.listen === target) {
+			playSaiScreenVoice(plan, { force: true });
+			return;
+		}
+		startSpeech(target);
+	}
 
 	function inputValue(event: Event) {
 		return (event.currentTarget as HTMLInputElement).value;
@@ -927,6 +1078,7 @@
 		onboardingIntroVisible = index === 0 && !profile?.onboardingCompleted;
 		if (onboardingIntroVisible) {
 			stopOnboardingVoice();
+			playSaiScreenVoice(onboardingIntroVoicePlan, { force: true });
 			return;
 		}
 		beginOnboardingVoice(onboardingQuestions[index]);
@@ -1015,7 +1167,6 @@
 		speechMessage = '';
 		recommendationSpeechCaptions = {};
 		screen = 'time';
-		startSpeech('time');
 	}
 
 	function setCompanionRelations(relations: CompanionRelation[]) {
@@ -1092,7 +1243,7 @@
 			applySituationTranscript(customSituationInput);
 		}
 		if (!selectedCompanionRelationOptions.length) return;
-		openRecommendationStep('budget', 'budget');
+		openRecommendationStep('budget');
 	}
 
 	function selectTime(id: string) {
@@ -1129,7 +1280,7 @@
 			if (!value && !(session.startDateTime && session.endDateTime)) return;
 			session.customTime = value;
 		}
-		openRecommendationStep('situation', 'situation');
+		openRecommendationStep('situation');
 	}
 
 	function budgetInputShouldFormat(value: string) {
@@ -1154,7 +1305,7 @@
 
 	function continueBudget() {
 		if (!session.budgetTotal) return;
-		openRecommendationStep('extra', 'extra');
+		openRecommendationStep('extra');
 	}
 
 	async function continueExtra() {
@@ -1188,8 +1339,6 @@
 		screen = followupQuestions.length ? 'followup' : 'generating';
 		if (!followupQuestions.length) {
 			void generateRecommendations();
-		} else {
-			startSpeech('followup');
 		}
 	}
 
@@ -1224,7 +1373,7 @@
 		if (followupIndex < followupQuestions.length - 1) {
 			followupIndex += 1;
 			followupAnswerInput = '';
-			openRecommendationStep('followup', 'followup');
+			openRecommendationStep('followup');
 			return;
 		}
 
@@ -2090,13 +2239,9 @@
 		speechMessage = '';
 	}
 
-	function openRecommendationStep(
-		targetScreen: Screen,
-		target: Exclude<SpeechTarget, 'onboarding'>
-	) {
+	function openRecommendationStep(targetScreen: Screen) {
 		clearRecommendationSpeech();
 		screen = targetScreen;
-		startSpeech(target);
 	}
 
 	function rememberRecommendationSpeech(target: SpeechTarget, text: string) {
@@ -2118,8 +2263,8 @@
 
 	function stopOnboardingVoice() {
 		clearOnboardingSilenceTimer();
-		onboardingSpeaking = false;
-		onboardingTtsRequestId += 1;
+		saiSpeaking = false;
+		saiSpeechRequestId += 1;
 		stopOnboardingAudio();
 		if (listeningFor === 'onboarding') stopActiveRecognition();
 	}
@@ -2130,13 +2275,13 @@
 	) {
 		onboardingVoicePaused = false;
 		onboardingSpeechStatus = '';
-		const ttsRequestId = ++onboardingTtsRequestId;
+		const ttsRequestId = ++saiSpeechRequestId;
 
 		const shouldReadQuestion =
 			options.readQuestion ?? !spokenOnboardingQuestionIds.includes(question.id);
 		if (shouldReadQuestion) {
 			const supertoneSpoken = await speakOnboardingQuestionWithSupertone(question, ttsRequestId);
-			if (ttsRequestId !== onboardingTtsRequestId) return;
+			if (ttsRequestId !== saiSpeechRequestId) return;
 			if (supertoneSpoken) {
 				if (!spokenOnboardingQuestionIds.includes(question.id)) {
 					spokenOnboardingQuestionIds.push(question.id);
@@ -2146,7 +2291,7 @@
 			showOnboardingTtsError();
 			return;
 		}
-		onboardingSpeaking = false;
+		saiSpeaking = false;
 		stopOnboardingAudio();
 		startSpeech('onboarding');
 	}
@@ -2155,21 +2300,87 @@
 		beginOnboardingVoice(currentOnboardingQuestion, { readQuestion: false });
 	}
 
+	function stopSaiAudio() {
+		saiSpeechRequestId += 1;
+		stopOnboardingAudio();
+	}
+
 	function stopOnboardingAudio() {
-		if (activeOnboardingAudio) {
-			activeOnboardingAudio.pause();
-			activeOnboardingAudio.removeAttribute('src');
-			activeOnboardingAudio.load();
-			activeOnboardingAudio = null;
+		if (activeSaiAudio) {
+			activeSaiAudio.pause();
+			activeSaiAudio.removeAttribute('src');
+			activeSaiAudio.load();
+			activeSaiAudio = null;
 		}
-		if (activeOnboardingAudioUrl) {
-			URL.revokeObjectURL(activeOnboardingAudioUrl);
-			activeOnboardingAudioUrl = '';
+		if (activeSaiAudioUrl) {
+			URL.revokeObjectURL(activeSaiAudioUrl);
+			activeSaiAudioUrl = '';
+		}
+	}
+
+	async function runScreenVoice(plan: SaiScreenVoicePlan) {
+		if (!browser) return;
+
+		stopActiveRecognition();
+		stopSaiAudio();
+		saiSpeaking = true;
+		speechTranscript = '';
+		speechMessage = '';
+		const speechRequestId = ++saiSpeechRequestId;
+
+		try {
+			const response = await fetch(resolve('/api/voice/tts'), {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ text: plan.text })
+			});
+			if (!response.ok) throw new Error(`Supertone TTS ${response.status}`);
+
+			const blob = await response.blob();
+			if (speechRequestId !== saiSpeechRequestId) return;
+
+			activeSaiAudioUrl = URL.createObjectURL(blob);
+			const audio = new Audio(activeSaiAudioUrl);
+			activeSaiAudio = audio;
+
+			await new Promise<void>((resolvePlayback) => {
+				audio.onended = () => {
+					if (activeSaiAudio === audio) {
+						stopSaiAudio();
+						saiSpeaking = false;
+						if (plan.listen) startSpeech(plan.listen);
+					}
+					resolvePlayback();
+				};
+				audio.onerror = () => {
+					if (activeSaiAudio === audio) {
+						stopSaiAudio();
+						saiSpeaking = false;
+						if (plan.listen) startSpeech(plan.listen);
+					}
+					resolvePlayback();
+				};
+				void audio.play().catch(() => {
+					if (activeSaiAudio === audio) {
+						stopSaiAudio();
+						saiSpeaking = false;
+						if (plan.listen) startSpeech(plan.listen);
+					}
+					resolvePlayback();
+				});
+			});
+		} catch (error) {
+			console.error(error);
+			if (speechRequestId === saiSpeechRequestId) {
+				stopSaiAudio();
+				saiSpeaking = false;
+				if (plan.listen) startSpeech(plan.listen);
+			}
 		}
 	}
 
 	function showOnboardingTtsError() {
-		onboardingSpeaking = false;
+		saiSpeaking = false;
 		onboardingVoicePaused = true;
 		onboardingSpeechStatus = 'Supertone TTS 오류야. 설정이나 네트워크를 확인해줘.';
 		if (listeningFor === 'onboarding') stopActiveRecognition();
@@ -2183,7 +2394,7 @@
 
 		stopActiveRecognition();
 		stopOnboardingAudio();
-		onboardingSpeaking = true;
+		saiSpeaking = true;
 		speechTranscript = '';
 		speechMessage = '';
 		onboardingSpeechStatus = '';
@@ -2202,30 +2413,30 @@
 			if (!response.ok) throw new Error(`Supertone TTS ${response.status}`);
 
 			const blob = await response.blob();
-			if (ttsRequestId !== onboardingTtsRequestId) return true;
+			if (ttsRequestId !== saiSpeechRequestId) return true;
 
-			activeOnboardingAudioUrl = URL.createObjectURL(blob);
-			const audio = new Audio(activeOnboardingAudioUrl);
-			activeOnboardingAudio = audio;
+			activeSaiAudioUrl = URL.createObjectURL(blob);
+			const audio = new Audio(activeSaiAudioUrl);
+			activeSaiAudio = audio;
 
 			return await new Promise<boolean>((resolveSpoken) => {
 				audio.onended = () => {
-					if (activeOnboardingAudio === audio) {
+					if (activeSaiAudio === audio) {
 						stopOnboardingAudio();
-						onboardingSpeaking = false;
+						saiSpeaking = false;
 						if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
 					}
 					resolveSpoken(true);
 				};
 				audio.onerror = () => {
-					if (activeOnboardingAudio === audio) {
+					if (activeSaiAudio === audio) {
 						stopOnboardingAudio();
 						showOnboardingTtsError();
 					}
 					resolveSpoken(false);
 				};
 				void audio.play().catch(() => {
-					if (activeOnboardingAudio === audio) {
+					if (activeSaiAudio === audio) {
 						stopOnboardingAudio();
 						showOnboardingTtsError();
 					}
@@ -2234,7 +2445,7 @@
 			});
 		} catch (error) {
 			console.error(error);
-			if (ttsRequestId === onboardingTtsRequestId) {
+			if (ttsRequestId === saiSpeechRequestId) {
 				stopOnboardingAudio();
 				showOnboardingTtsError();
 			}
@@ -2765,17 +2976,20 @@
 		<button
 			class={`onboarding-mascot-ring mascot-pulse ${listeningFor === target ? 'listening' : ''}`}
 			type="button"
-			onclick={() => startSpeech(target)}
-			aria-label="말로 답하기"
+			onclick={() => replayRecommendationVoice(target)}
+			aria-label="질문 다시 듣고 말로 답하기"
 		>
 			<div
-				class={`mascot mascot-${listeningFor === target ? 'listening' : 'idle'} onboarding-mascot`}
+				class={`mascot mascot-${saiSpeaking ? 'talking' : listeningFor === target ? 'listening' : 'idle'} onboarding-mascot`}
 			>
 				<img src={saiSymbol} alt="사이" />
 			</div>
 		</button>
 		<p class="onboarding-voice-caption">
-			{recommendationVoiceCaption(target, '나를 누르면 말로 답할 수 있어. 아래에 직접 적어도 돼.')}
+			{recommendationVoiceCaption(
+				target,
+				'나를 누르면 질문을 다시 듣고 말로 답할 수 있어. 아래에 직접 적어도 돼.'
+			)}
 		</p>
 	</div>
 {/snippet}
@@ -3066,14 +3280,12 @@
 				{#if onboardingIntroVisible}
 					<div class="onboarding-coach">
 						<div class="onboarding-bubble onboarding-intro-bubble">
-							<p class="eyebrow">온보딩</p>
-							<h1>안녕, 나는 사이야.</h1>
-							<p>
-								너한테 더 잘 맞는 선택지를 찾아주려고, 먼저 너를 조금 알아보는 질문을 몇 개만 할게.
-							</p>
+							<p class="eyebrow">{onboardingIntroContent.eyebrow}</p>
+							<h1>{onboardingIntroContent.title}</h1>
+							<p>{onboardingIntroContent.body}</p>
 						</div>
 						<div class="onboarding-mascot-ring onboarding-intro-mascot-ring" aria-hidden="true">
-							<div class="mascot mascot-happy onboarding-mascot">
+							<div class={`mascot mascot-${saiSpeaking ? 'talking' : 'happy'} onboarding-mascot`}>
 								<img src={saiSymbol} alt="" />
 							</div>
 						</div>
@@ -3166,10 +3378,10 @@
 		{:else if screen === 'situation'}
 			<section class="screen decision-screen onboarding-screen recommendation-screen">
 				{@render recommendationCoach(
-					'추천 질문 2/4',
-					'오늘은 누구랑 같이 움직여?',
-					'엄마, 친구, 아내, 아이처럼 함께할 사람을 모두 골라줘. 관계별로 다르게 맞춰볼게.',
-					'situation'
+					recommendationCoachContent.situation.eyebrow,
+					recommendationCoachContent.situation.title,
+					recommendationCoachContent.situation.body,
+					recommendationCoachContent.situation.target
 				)}
 
 				<div class="onboarding-answer-panel recommendation-answer-panel">
@@ -3216,10 +3428,10 @@
 		{:else if screen === 'time'}
 			<section class="screen decision-screen onboarding-screen recommendation-screen">
 				{@render recommendationCoach(
-					'추천 질문 1/4',
-					'시간 얼마나 있어?',
-					'한 시간이든 반나절이든 괜찮아. 딱 가능한 만큼만 알려줘.',
-					'time'
+					recommendationCoachContent.time.eyebrow,
+					recommendationCoachContent.time.title,
+					recommendationCoachContent.time.body,
+					recommendationCoachContent.time.target
 				)}
 
 				<div class="onboarding-answer-panel recommendation-answer-panel">
@@ -3263,10 +3475,10 @@
 		{:else if screen === 'budget'}
 			<section class="screen decision-screen onboarding-screen recommendation-screen">
 				{@render recommendationCoach(
-					'추천 질문 3/4',
-					'오늘 예산은 얼마야?',
-					'여러 명이어도 총 예산으로 알려줘. 그 금액 안에서 맞춰볼게.',
-					'budget'
+					recommendationCoachContent.budget.eyebrow,
+					recommendationCoachContent.budget.title,
+					recommendationCoachContent.budget.body,
+					recommendationCoachContent.budget.target
 				)}
 
 				<div class="onboarding-answer-panel recommendation-answer-panel">
@@ -3296,10 +3508,10 @@
 		{:else if screen === 'extra'}
 			<section class="screen decision-screen onboarding-screen recommendation-screen">
 				{@render recommendationCoach(
-					'추천 질문 4/4',
-					'더 하고 싶은 말 있어?',
-					'원하는 분위기, 피하고 싶은 것, 꼭 챙길 조건이 있으면 말해줘. 없으면 바로 넘어가도 돼.',
-					'extra'
+					recommendationCoachContent.extra.eyebrow,
+					recommendationCoachContent.extra.title,
+					recommendationCoachContent.extra.body,
+					recommendationCoachContent.extra.target
 				)}
 
 				<div class="onboarding-answer-panel recommendation-answer-panel">
@@ -3322,14 +3534,10 @@
 		{:else if screen === 'followup'}
 			<section class="screen decision-screen onboarding-screen recommendation-screen">
 				{@render recommendationCoach(
-					`추가 질문 ${followupIndex + 1}/${followupQuestions.length}`,
-					currentFollowup?.prompt ?? '하나만 더 물어볼게',
-					followupSource === 'exaone'
-						? 'EXAONE이 더 필요한 맥락만 골라서 물어보는 중이야.'
-						: followupSource === 'openai'
-							? 'AI가 추천 전에 딱 필요한 맥락만 확인하는 중이야.'
-							: '방금 말한 시간, 돈, 구성원은 다시 안 물어볼게.',
-					'followup'
+					followupCoachContent.eyebrow,
+					followupCoachContent.title,
+					followupCoachContent.body,
+					followupCoachContent.target
 				)}
 
 				<div class="onboarding-answer-panel recommendation-answer-panel">
