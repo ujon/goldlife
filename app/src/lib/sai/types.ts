@@ -63,7 +63,7 @@ export type LocationSuggestion = {
 	id: string;
 	label: string;
 	description?: string;
-	source: 'public_data' | 'fallback';
+	source: 'public_data' | 'region_code' | 'fallback';
 };
 
 export type IntegrationLogKind = 'ai' | 'api';
