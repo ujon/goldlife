@@ -6,7 +6,6 @@
 	import {
 		applyTimeUtilization,
 		buildFollowupQuestions,
-		companionRelationOptions,
 		companionRelationSummary,
 		normalizeCompanionRelations,
 		composeRecommendations,
@@ -398,11 +397,6 @@
 			? isPendingOnboardingAnswerReady(currentOnboardingQuestion, onboardingAnswerInput)
 			: onboardingAnswered
 	);
-	let selectedCompanionRelations = $derived(session.companionRelations ?? []);
-	let selectedCompanionRelationOptions = $derived(
-		companionRelationOptions.filter((option) => selectedCompanionRelations.includes(option.id))
-	);
-	let selectedCompanionSummary = $derived(companionRelationSummary(session));
 	let timeRangeSummary = $derived(
 		timeRangeText(session.startDateTime ?? '', session.endDateTime ?? '')
 	);
@@ -1180,14 +1174,6 @@
 		session.situation = primarySituationFromRelations(normalized);
 	}
 
-	function toggleCompanionRelation(relation: CompanionRelation) {
-		const current = session.companionRelations ?? [];
-		const next = current.includes(relation)
-			? current.filter((item) => item !== relation)
-			: [...current, relation];
-		setCompanionRelations(next);
-	}
-
 	function companionRelationsFromText(text: string): CompanionRelation[] {
 		const normalized = text.replace(/\s/g, '').toLowerCase();
 		if (!normalized) return [];
@@ -1239,10 +1225,8 @@
 	}
 
 	function continueSituation() {
-		if (!selectedCompanionRelationOptions.length && customSituationInput.trim()) {
-			applySituationTranscript(customSituationInput);
-		}
-		if (!selectedCompanionRelationOptions.length) return;
+		if (!companionRelationsFromText(customSituationInput).length) return;
+		applySituationTranscript(customSituationInput);
 		openRecommendationStep('budget');
 	}
 
@@ -3400,8 +3384,7 @@
 						class="primary"
 						type="button"
 						onclick={continueSituation}
-						disabled={!selectedCompanionRelationOptions.length &&
-							!companionRelationsFromText(customSituationInput).length}
+						disabled={!companionRelationsFromText(customSituationInput).length}
 					>
 						다음으로
 					</button>
@@ -4267,68 +4250,6 @@
 
 	.recommendation-answer-panel textarea {
 		min-height: 86px;
-	}
-
-	.relation-picker {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 7px;
-	}
-
-	.relation-option {
-		display: grid;
-		min-width: 0;
-		min-height: 58px;
-		align-content: center;
-		justify-items: center;
-		gap: 5px;
-		border: 1px solid var(--line);
-		border-radius: 16px;
-		background: #fff;
-		color: var(--ink2);
-		padding: 8px 6px;
-		box-shadow: 0 6px 14px rgba(120, 110, 160, 0.06);
-		cursor: pointer;
-	}
-
-	.relation-option span {
-		display: grid;
-		width: 25px;
-		height: 25px;
-		place-items: center;
-		border-radius: 999px;
-		background: #f4eff8;
-		color: var(--indigo);
-		font-size: 11px;
-		font-weight: 900;
-	}
-
-	.relation-option strong {
-		overflow: hidden;
-		width: 100%;
-		font-size: 12px;
-		font-weight: 900;
-		line-height: 1.2;
-		text-align: center;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.relation-option.active {
-		border-color: rgba(91, 108, 255, 0.38);
-		background: linear-gradient(135deg, rgba(255, 107, 94, 0.14), rgba(91, 108, 255, 0.13));
-		color: var(--ink);
-		box-shadow: 0 10px 22px rgba(91, 108, 255, 0.14);
-	}
-
-	.relation-option.active span {
-		background: linear-gradient(135deg, var(--coral), var(--indigo));
-		color: #fff;
-	}
-
-	.relation-option:focus-visible {
-		outline: 3px solid rgba(91, 108, 255, 0.22);
-		outline-offset: 2px;
 	}
 
 	.datetime-grid {
