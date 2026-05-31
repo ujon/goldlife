@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { resolve } from '$app/paths';
 	import saiSymbol from '$lib/assets/sai-symbol.svg';
 	import type { CandidateBundle } from '$lib/sai/candidates';
 	import {
@@ -122,7 +123,6 @@
 	};
 	const MINUTE_MS = 60 * 1000;
 	const ONBOARDING_SILENCE_TIMEOUT_MS = 9000;
-	const WEB_SPEECH_TTS_ENABLED = true;
 	const spokenOnboardingQuestionIds: OnboardingQuestionId[] = [];
 	const mbtiOptions = [
 		'ISTJ',
@@ -305,6 +305,13 @@
 	let locationSearchRequestId = 0;
 	let activeRecognition: WebSpeechRecognition | null = null;
 	let onboardingSilenceTimer: ReturnType<typeof setTimeout> | null = null;
+	let onboardingTtsRequestId = 0;
+	let activeOnboardingAudio: HTMLAudioElement | null = null;
+	let activeOnboardingAudioUrl = '';
+
+	if (browser) {
+		void autoLoginInDevelopment();
+	}
 
 	let currentOnboardingQuestion = $derived(onboardingQuestions[onboardingIndex]);
 	let onboardingMascotState = $derived(
@@ -434,6 +441,21 @@
 			method: 'POST',
 			body: JSON.stringify({ email, password })
 		});
+	}
+
+	async function autoLoginInDevelopment() {
+		if (currentUserId || busy) return;
+		busy = true;
+		const result = await serverJson<ServerAuthResult>('/api/auth/dev-login', {
+			method: 'POST',
+			body: null
+		});
+		busy = false;
+		if (result.type === 'ok') {
+			applyServerAuthResult(result.data);
+			return;
+		}
+		if (result.status !== 404) authError = result.message;
 	}
 
 	async function syncServerProfile(nextProfile: UserProfile) {
@@ -1813,31 +1835,35 @@
 	function stopOnboardingVoice() {
 		clearOnboardingSilenceTimer();
 		onboardingSpeaking = false;
-		getWebSpeechSynthesis()?.cancel();
+		onboardingTtsRequestId += 1;
+		stopOnboardingAudio();
 		if (listeningFor === 'onboarding') stopActiveRecognition();
 	}
 
-	function beginOnboardingVoice(
+	async function beginOnboardingVoice(
 		question: OnboardingQuestion = currentOnboardingQuestion,
 		options: OnboardingVoiceOptions = {}
 	) {
 		onboardingVoicePaused = false;
 		onboardingSpeechStatus = '';
+		const ttsRequestId = ++onboardingTtsRequestId;
 
 		const shouldReadQuestion =
 			options.readQuestion ?? !spokenOnboardingQuestionIds.includes(question.id);
-		if (
-			WEB_SPEECH_TTS_ENABLED &&
-			shouldReadQuestion &&
-			speakOnboardingQuestionWithWebSpeech(question)
-		) {
-			if (!spokenOnboardingQuestionIds.includes(question.id)) {
-				spokenOnboardingQuestionIds.push(question.id);
+		if (shouldReadQuestion) {
+			const supertoneSpoken = await speakOnboardingQuestionWithSupertone(question, ttsRequestId);
+			if (ttsRequestId !== onboardingTtsRequestId) return;
+			if (supertoneSpoken) {
+				if (!spokenOnboardingQuestionIds.includes(question.id)) {
+					spokenOnboardingQuestionIds.push(question.id);
+				}
+				return;
 			}
+			showOnboardingTtsError();
 			return;
 		}
 		onboardingSpeaking = false;
-		getWebSpeechSynthesis()?.cancel();
+		stopOnboardingAudio();
 		startSpeech('onboarding');
 	}
 
@@ -1845,14 +1871,34 @@
 		beginOnboardingVoice(currentOnboardingQuestion, { readQuestion: false });
 	}
 
-	function speakOnboardingQuestionWithWebSpeech(
-		question: OnboardingQuestion = currentOnboardingQuestion
+	function stopOnboardingAudio() {
+		if (activeOnboardingAudio) {
+			activeOnboardingAudio.pause();
+			activeOnboardingAudio.removeAttribute('src');
+			activeOnboardingAudio.load();
+			activeOnboardingAudio = null;
+		}
+		if (activeOnboardingAudioUrl) {
+			URL.revokeObjectURL(activeOnboardingAudioUrl);
+			activeOnboardingAudioUrl = '';
+		}
+	}
+
+	function showOnboardingTtsError() {
+		onboardingSpeaking = false;
+		onboardingVoicePaused = true;
+		onboardingSpeechStatus = 'Supertone TTS 오류야. 설정이나 네트워크를 확인해줘.';
+		if (listeningFor === 'onboarding') stopActiveRecognition();
+	}
+
+	async function speakOnboardingQuestionWithSupertone(
+		question: OnboardingQuestion = currentOnboardingQuestion,
+		ttsRequestId: number
 	) {
-		const synthesis = getWebSpeechSynthesis();
-		if (!synthesis) return false;
+		if (!browser) return false;
 
 		stopActiveRecognition();
-		synthesis.cancel();
+		stopOnboardingAudio();
 		onboardingSpeaking = true;
 		speechTranscript = '';
 		speechMessage = '';
@@ -1860,21 +1906,56 @@
 
 		const answerHint =
 			question.id === 'mbtiType' ? 'ENFP처럼 MBTI 유형 하나만 말하거나, 잘 모르겠다고 말해줘.' : '';
-		const utterance = new SpeechSynthesisUtterance(
-			[question.prompt, answerHint].filter(Boolean).join(' ')
-		);
-		utterance.lang = 'ko-KR';
-		utterance.rate = 1.02;
-		utterance.onend = () => {
-			onboardingSpeaking = false;
-			if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
-		};
-		utterance.onerror = () => {
-			onboardingSpeaking = false;
-			if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
-		};
-		synthesis.speak(utterance);
-		return true;
+
+		try {
+			const response = await fetch(resolve('/api/voice/tts'), {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					text: [question.prompt, answerHint].filter(Boolean).join(' ')
+				})
+			});
+			if (!response.ok) throw new Error(`Supertone TTS ${response.status}`);
+
+			const blob = await response.blob();
+			if (ttsRequestId !== onboardingTtsRequestId) return true;
+
+			activeOnboardingAudioUrl = URL.createObjectURL(blob);
+			const audio = new Audio(activeOnboardingAudioUrl);
+			activeOnboardingAudio = audio;
+
+			return await new Promise<boolean>((resolveSpoken) => {
+				audio.onended = () => {
+					if (activeOnboardingAudio === audio) {
+						stopOnboardingAudio();
+						onboardingSpeaking = false;
+						if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
+					}
+					resolveSpoken(true);
+				};
+				audio.onerror = () => {
+					if (activeOnboardingAudio === audio) {
+						stopOnboardingAudio();
+						showOnboardingTtsError();
+					}
+					resolveSpoken(false);
+				};
+				void audio.play().catch(() => {
+					if (activeOnboardingAudio === audio) {
+						stopOnboardingAudio();
+						showOnboardingTtsError();
+					}
+					resolveSpoken(false);
+				});
+			});
+		} catch (error) {
+			console.error(error);
+			if (ttsRequestId === onboardingTtsRequestId) {
+				stopOnboardingAudio();
+				showOnboardingTtsError();
+			}
+			return false;
+		}
 	}
 
 	function clearOnboardingSilenceTimer() {
@@ -1908,11 +1989,6 @@
 		activeRecognition = null;
 		recognition.stop();
 		listeningFor = null;
-	}
-
-	function getWebSpeechSynthesis() {
-		if (!browser || !window.speechSynthesis) return null;
-		return window.speechSynthesis;
 	}
 
 	function getWebSpeechRecognitionCtor(): WebSpeechRecognitionConstructor | undefined {

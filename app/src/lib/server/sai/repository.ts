@@ -118,6 +118,15 @@ export async function signup(emailInput: string, password: string): Promise<Auth
 	return result;
 }
 
+export async function getOrCreateDevUser(
+	emailInput: string,
+	password: string
+): Promise<AuthResult> {
+	const existing = await getAuthResult(userIdFromEmail(emailInput));
+	if (existing) return existing;
+	return signup(emailInput, password);
+}
+
 export async function login(emailInput: string, password: string): Promise<AuthResult | null> {
 	await ensureSchema();
 	const sql = getSql();
