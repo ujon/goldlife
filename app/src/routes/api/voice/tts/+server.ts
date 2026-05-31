@@ -8,6 +8,17 @@ const SUPERTONE_DEFAULT_MODEL = 'sona_speech_2_flash';
 const SUPERTONE_DEFAULT_VOICE_ID = '7c56c6a6471a12816604f0';
 const SUPERTONE_DEFAULT_OUTPUT_FORMAT = 'mp3';
 const SUPERTONE_MAX_TEXT_LENGTH = 300;
+const SUPERTONE_TTS_CACHE_DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
+const SUPERTONE_TTS_CACHE_DEFAULT_MAX_ENTRIES = 100;
+
+type TtsCacheEntry = {
+	bytes: Uint8Array;
+	contentType: string;
+	expiresAt: number;
+};
+
+const ttsCache = new Map<string, TtsCacheEntry>();
+const pendingTtsRequests = new Map<string, Promise<TtsCacheEntry>>();
 
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await readTtsRequestBody(request);
@@ -26,41 +37,109 @@ export const POST: RequestHandler = async ({ request }) => {
 	const voiceId = env.SUPERTONE_VOICE_ID || SUPERTONE_DEFAULT_VOICE_ID;
 	const modelId = env.SUPERTONE_MODEL || SUPERTONE_DEFAULT_MODEL;
 	const outputFormat = env.SUPERTONE_OUTPUT_FORMAT || SUPERTONE_DEFAULT_OUTPUT_FORMAT;
-	const url = new URL(`/v1/text-to-speech/${voiceId}`, baseUrl);
+	const cacheKey = JSON.stringify({
+		baseUrl,
+		voiceId,
+		modelId,
+		outputFormat,
+		language: 'ko',
+		text
+	});
 
-	let response: Response;
+	pruneExpiredTtsCache();
+
+	const cached = ttsCache.get(cacheKey);
+	if (cached && cached.expiresAt > Date.now()) {
+		ttsCache.delete(cacheKey);
+		ttsCache.set(cacheKey, cached);
+		return ttsAudioResponse(cached, 'HIT');
+	}
+	if (cached) ttsCache.delete(cacheKey);
+
 	try {
-		response = await fetch(url, {
-			method: 'POST',
-			headers: {
-				'content-type': 'application/json',
-				'x-sup-api-key': env.SUPERTONE_API_KEY
-			},
-			body: JSON.stringify({
-				text,
-				language: 'ko',
-				model: modelId,
-				output_format: outputFormat
-			})
-		});
+		const pending =
+			pendingTtsRequests.get(cacheKey) ??
+			fetchSupertoneTts({ baseUrl, voiceId, modelId, outputFormat, text });
+		pendingTtsRequests.set(cacheKey, pending);
+
+		const entry = await pending;
+		pendingTtsRequests.delete(cacheKey);
+
+		ttsCache.set(cacheKey, entry);
+		pruneTtsCache(SUPERTONE_TTS_CACHE_DEFAULT_MAX_ENTRIES);
+
+		return ttsAudioResponse(entry, 'MISS');
 	} catch (error) {
-		console.error('Supertone TTS request failed', error);
+		pendingTtsRequests.delete(cacheKey);
+		console.error(error);
 		return json({ error: 'Supertone TTS failed' }, { status: 502 });
 	}
+};
 
-	if (!response.ok || !response.body) {
+async function fetchSupertoneTts({
+	baseUrl,
+	voiceId,
+	modelId,
+	outputFormat,
+	text
+}: {
+	baseUrl: string;
+	voiceId: string;
+	modelId: string;
+	outputFormat: string;
+	text: string;
+}) {
+	const url = new URL(`/v1/text-to-speech/${voiceId}`, baseUrl);
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'x-sup-api-key': env.SUPERTONE_API_KEY
+		},
+		body: JSON.stringify({
+			text,
+			language: 'ko',
+			model: modelId,
+			output_format: outputFormat
+		})
+	});
+
+	if (!response.ok) {
 		const detail = await response.text().catch(() => '');
-		console.error(`Supertone TTS failed: ${response.status} ${detail}`);
-		return json({ error: 'Supertone TTS failed' }, { status: 502 });
+		throw new Error(`Supertone TTS failed: ${response.status} ${detail}`);
 	}
 
-	return new Response(response.body, {
+	return {
+		bytes: new Uint8Array(await response.arrayBuffer()),
+		contentType: outputFormat === 'wav' ? 'audio/wav' : 'audio/mpeg',
+		expiresAt: Date.now() + SUPERTONE_TTS_CACHE_DEFAULT_TTL_SECONDS * 1000
+	};
+}
+
+function ttsAudioResponse(entry: TtsCacheEntry, cacheStatus: 'HIT' | 'MISS') {
+	return new Response(entry.bytes.slice(), {
 		headers: {
 			'cache-control': 'no-store',
-			'content-type': outputFormat === 'wav' ? 'audio/wav' : 'audio/mpeg'
+			'content-type': entry.contentType,
+			'x-tts-cache': cacheStatus
 		}
 	});
-};
+}
+
+function pruneExpiredTtsCache() {
+	const now = Date.now();
+	for (const [key, entry] of ttsCache) {
+		if (entry.expiresAt <= now) ttsCache.delete(key);
+	}
+}
+
+function pruneTtsCache(maxEntries: number) {
+	while (ttsCache.size > maxEntries) {
+		const oldestKey = ttsCache.keys().next().value;
+		if (!oldestKey) return;
+		ttsCache.delete(oldestKey);
+	}
+}
 
 async function readTtsRequestBody(request: Request) {
 	let raw: string;
