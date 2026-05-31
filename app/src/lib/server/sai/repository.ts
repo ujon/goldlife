@@ -5,6 +5,10 @@ import type {
 	RecommendationSession,
 	UserProfile
 } from '$lib/sai/types';
+import {
+	companionRelationsForSituation,
+	normalizeCompanionRelations
+} from '$lib/sai/recommendations';
 import { ensureSchema, getSql } from './db';
 
 export type AuthResult = {
@@ -221,7 +225,7 @@ export async function saveRecommendationHistory(
 				${tx.json(session.weatherSnapshot)},
 				${tx.json(session.dynamicQuestions ?? [])},
 				${tx.json(session.dynamicAnswers)},
-				${tx.json(session.companionConstraints)},
+				${tx.json(companionConstraintsPayload(session))},
 				${session.createdAt}
 			)
 			on conflict (id) do update set
@@ -444,17 +448,39 @@ function mapProfile(user: UserRow, row: ProfileRow): UserProfile {
 }
 
 function mapSession(row: SessionRow): RecommendationSession {
+	const companionConstraints = row.companion_constraints;
+	const companionRelations = normalizeCompanionRelations(
+		companionConstraints.relations?.length
+			? companionConstraints.relations
+			: companionRelationsForSituation(row.situation ?? undefined)
+	);
 	return {
 		id: row.id,
 		situation: row.situation ?? undefined,
+		companionRelations,
 		location: row.location ?? undefined,
 		availableTime: row.available_time ?? undefined,
 		budgetTotal: row.budget_total ?? undefined,
 		weatherSnapshot: row.weather_snapshot,
 		dynamicQuestions: row.dynamic_questions ?? [],
 		dynamicAnswers: row.dynamic_answers,
-		companionConstraints: row.companion_constraints,
+		companionConstraints: {
+			...companionConstraints,
+			relations: companionRelations
+		},
 		createdAt: row.created_at.toISOString()
+	};
+}
+
+function companionConstraintsPayload(session: RecommendationSession) {
+	const relations = normalizeCompanionRelations(
+		session.companionRelations?.length
+			? session.companionRelations
+			: (session.companionConstraints.relations ?? [])
+	);
+	return {
+		...session.companionConstraints,
+		relations
 	};
 }
 

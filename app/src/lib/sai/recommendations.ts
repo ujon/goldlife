@@ -1,5 +1,6 @@
 import type {
 	CompanionConstraints,
+	CompanionRelation,
 	FollowupQuestion,
 	LocationValue,
 	RecommendationCard,
@@ -22,6 +23,116 @@ export const situationOptions: Array<{
 	{ id: 'couple', icon: '커', label: '커플', people: 2, accent: 'couple' },
 	{ id: 'family', icon: '집', label: '가족', people: 3, accent: 'family' },
 	{ id: 'group', icon: '팀', label: '동료/모임', people: 4, accent: 'group' }
+];
+
+export const companionRelationOptions: Array<{
+	id: CompanionRelation;
+	icon: string;
+	label: string;
+	people: number;
+	situation: Situation;
+	accent: string;
+	recommendationFocus: string;
+}> = [
+	{
+		id: 'solo',
+		icon: '나',
+		label: '혼자',
+		people: 0,
+		situation: 'solo',
+		accent: 'solo',
+		recommendationFocus: '혼자만의 속도와 취향'
+	},
+	{
+		id: 'friend',
+		icon: '친',
+		label: '친구',
+		people: 1,
+		situation: 'friend',
+		accent: 'friend',
+		recommendationFocus: '대화와 같이 즐길 활동'
+	},
+	{
+		id: 'spouse',
+		icon: '배',
+		label: '아내/남편',
+		people: 1,
+		situation: 'couple',
+		accent: 'couple',
+		recommendationFocus: '둘만의 분위기와 편한 동선'
+	},
+	{
+		id: 'mother',
+		icon: '엄',
+		label: '엄마',
+		people: 1,
+		situation: 'family',
+		accent: 'family',
+		recommendationFocus: '부모님이 편하게 머물 수 있는 동선'
+	},
+	{
+		id: 'father',
+		icon: '아',
+		label: '아빠',
+		people: 1,
+		situation: 'family',
+		accent: 'family',
+		recommendationFocus: '부모님과 부담 없이 같이 즐길 거리'
+	},
+	{
+		id: 'parent',
+		icon: '부',
+		label: '부모님',
+		people: 2,
+		situation: 'family',
+		accent: 'family',
+		recommendationFocus: '부모님 컨디션과 이동 편의'
+	},
+	{
+		id: 'child',
+		icon: '아',
+		label: '아이',
+		people: 1,
+		situation: 'family',
+		accent: 'family',
+		recommendationFocus: '아이도 지루하지 않은 안전한 활동'
+	},
+	{
+		id: 'baby',
+		icon: '애',
+		label: '아기',
+		people: 1,
+		situation: 'family',
+		accent: 'family',
+		recommendationFocus: '유모차, 수유실, 짧은 이동'
+	},
+	{
+		id: 'sibling',
+		icon: '형',
+		label: '형제/자매',
+		people: 1,
+		situation: 'family',
+		accent: 'family',
+		recommendationFocus: '가볍게 같이 즐길 가족 활동'
+	},
+	{
+		id: 'coworker',
+		icon: '동',
+		label: '동료',
+		people: 1,
+		situation: 'group',
+		accent: 'group',
+		recommendationFocus: '호불호 적고 대화하기 쉬운 자리'
+	},
+	{
+		id: 'group',
+		icon: '팀',
+		label: '모임',
+		people: 3,
+		situation: 'group',
+		accent: 'group',
+		recommendationFocus: '여러 명이 무난하게 움직이는 코스'
+	}
 ];
 
 export const timeOptions = [
@@ -67,6 +178,7 @@ export const dislikeReasons = [
 
 export function createEmptyCompanionConstraints(): CompanionConstraints {
 	return {
+		relations: [],
 		hasBaby: false,
 		strollerRequired: false,
 		babyCarrierOk: false,
@@ -103,6 +215,7 @@ export function createRecommendationSession(location?: LocationValue): Recommend
 	return {
 		id: `session_${Date.now()}`,
 		location,
+		companionRelations: [],
 		weatherSnapshot: createWeatherSnapshot(),
 		dynamicQuestions: [],
 		dynamicAnswers: {},
@@ -115,8 +228,198 @@ export function partyCount(situation?: Situation) {
 	return situationOptions.find((option) => option.id === situation)?.people ?? 1;
 }
 
+export function partyCountForSession(session: RecommendationSession) {
+	const relations = companionRelationsForSession(session);
+	if (!relations.length || (relations.length === 1 && relations[0] === 'solo')) {
+		return partyCount(session.situation);
+	}
+	return Math.max(
+		1,
+		Math.min(
+			9,
+			1 +
+				relations.reduce((sum, relation) => {
+					if (relation === 'solo') return sum;
+					return (
+						sum + (companionRelationOptions.find((option) => option.id === relation)?.people ?? 1)
+					);
+				}, 0)
+		)
+	);
+}
+
 export function situationLabel(situation?: Situation) {
 	return situationOptions.find((option) => option.id === situation)?.label ?? '혼자';
+}
+
+export function companionRelationLabel(relation: CompanionRelation) {
+	return companionRelationOptions.find((option) => option.id === relation)?.label ?? '동행';
+}
+
+export function companionRelationsForSession(session: RecommendationSession) {
+	const relations = session.companionRelations?.length
+		? session.companionRelations
+		: (session.companionConstraints.relations ?? []);
+	return normalizeCompanionRelations(
+		relations.length ? relations : companionRelationsForSituation(session.situation)
+	);
+}
+
+export function companionRelationsForSituation(situation?: Situation): CompanionRelation[] {
+	if (situation === 'friend') return ['friend'];
+	if (situation === 'couple') return ['spouse'];
+	if (situation === 'family') return ['parent'];
+	if (situation === 'group') return ['group'];
+	if (situation === 'solo') return ['solo'];
+	return [];
+}
+
+export function normalizeCompanionRelations(relations: CompanionRelation[]) {
+	const unique = [...new Set(relations)];
+	if (!unique.length) return [];
+	let normalized = unique;
+	if (normalized.includes('solo') && normalized.length > 1) {
+		normalized = normalized.filter((relation) => relation !== 'solo');
+	}
+	if (normalized.includes('parent')) {
+		normalized = normalized.filter((relation) => !['mother', 'father'].includes(relation));
+	}
+	return normalized;
+}
+
+export function primarySituationFromRelations(
+	relations: CompanionRelation[]
+): Situation | undefined {
+	const normalized = normalizeCompanionRelations(relations);
+	if (!normalized.length) return undefined;
+	if (normalized.length === 1 && normalized[0] === 'solo') return 'solo';
+	if (normalized.some((relation) => ['coworker', 'group'].includes(relation))) return 'group';
+	if (
+		normalized.some((relation) =>
+			['mother', 'father', 'parent', 'child', 'baby', 'sibling'].includes(relation)
+		)
+	) {
+		return 'family';
+	}
+	if (normalized.length > 1) return 'group';
+	if (normalized.includes('spouse')) return 'couple';
+	if (normalized.includes('friend')) return 'friend';
+	return 'group';
+}
+
+export function companionRelationSummary(session: RecommendationSession) {
+	const labels = companionRelationsForSession(session).map(companionRelationLabel);
+	if (!labels.length) return situationLabel(session.situation);
+	return labels.join(', ');
+}
+
+export function companionContextText(session: RecommendationSession) {
+	const relations = companionRelationsForSession(session);
+	if (!relations.length) return situationLabel(session.situation);
+	const focus = relations
+		.map((relation) => companionRelationOptions.find((option) => option.id === relation))
+		.filter((option): option is (typeof companionRelationOptions)[number] => Boolean(option))
+		.map((option) => `${option.label}: ${option.recommendationFocus}`);
+	return `${relations.map(companionRelationLabel).join(', ')} / ${focus.join(' · ')}`;
+}
+
+export function companionRelationStrategy(session: RecommendationSession) {
+	return companionRelationsForSession(session).map((relation, index) => {
+		const option = companionRelationOptions.find((item) => item.id === relation);
+		const label = option?.label ?? companionRelationLabel(relation);
+		const strategy = relationStrategyText(relation);
+		return {
+			relation,
+			label,
+			cardPriority: index + 1,
+			recommendationFocus: option?.recommendationFocus ?? strategy.focus,
+			searchHints: strategy.searchHints,
+			restaurantHints: strategy.restaurantHints,
+			avoid: strategy.avoid
+		};
+	});
+}
+
+export function companionRelationPromptGuide(session: RecommendationSession) {
+	const strategy = companionRelationStrategy(session).filter((item) => item.relation !== 'solo');
+	if (!strategy.length) return '혼자 움직이는 시간과 취향을 우선한다.';
+	return strategy
+		.map(
+			(item) =>
+				`${item.cardPriority}. ${item.label}: ${item.recommendationFocus}. 검색 힌트=${item.searchHints.join(', ')}. 식사 힌트=${item.restaurantHints.join(', ')}. 피할 것=${item.avoid}`
+		)
+		.join('\n');
+}
+
+function relationStrategyText(relation: CompanionRelation) {
+	switch (relation) {
+		case 'friend':
+			return {
+				focus: '대화가 잘 이어지고 같이 해볼 만한 활동',
+				searchHints: ['원데이클래스', '팝업', '방탈출', '전시'],
+				restaurantHints: ['수다 좋은 카페', '캐주얼 다이닝'],
+				avoid: '너무 조용해서 대화가 끊기거나 한 명만 즐기는 코스'
+			};
+		case 'spouse':
+			return {
+				focus: '둘만의 분위기, 예약 가능성, 너무 피곤하지 않은 동선',
+				searchHints: ['전시 데이트', '야경 산책', '공연', '분위기 좋은 코스'],
+				restaurantHints: ['예약 가능한 다이닝', '분위기 좋은 식당'],
+				avoid: '시끄럽거나 대기 시간이 긴 즉흥 코스'
+			};
+		case 'mother':
+		case 'father':
+		case 'parent':
+			return {
+				focus: '부모님 컨디션, 좌석 편안함, 짧은 도보와 주차',
+				searchHints: ['실내 전시', '공원 산책', '전통시장', '정원 카페'],
+				restaurantHints: ['조용한 한식', '좌석 편한 식당', '주차 쉬운 식당'],
+				avoid: '계단이 많거나 오래 서 있어야 하는 활동'
+			};
+		case 'child':
+			return {
+				focus: '아이가 지루하지 않고 안전하게 에너지를 쓸 수 있는 활동',
+				searchHints: ['어린이 체험', '키즈 전시', '실내놀이터', '과학관'],
+				restaurantHints: ['아이 메뉴 있는 식당', '넓은 좌석 카페'],
+				avoid: '오래 기다리거나 조용히 있어야 하는 장소'
+			};
+		case 'baby':
+			return {
+				focus: '유모차, 수유실, 기저귀 교체, 짧은 이동',
+				searchHints: ['유모차 실내', '키즈카페', '실내 식물원', '몰 산책'],
+				restaurantHints: ['키즈 프렌들리 카페', '수유실 가까운 식당'],
+				avoid: '엘리베이터나 수유 공간을 확인하기 어려운 장소'
+			};
+		case 'sibling':
+			return {
+				focus: '부담 없이 같이 즐기는 가족형 활동',
+				searchHints: ['체험', '전시', '보드게임', '산책'],
+				restaurantHints: ['가족 식사', '캐주얼 맛집'],
+				avoid: '한 명 취향으로만 치우친 코스'
+			};
+		case 'coworker':
+			return {
+				focus: '호불호가 적고 대화하기 편한 자리',
+				searchHints: ['팀빌딩', '볼링', '보드게임', '가벼운 체험'],
+				restaurantHints: ['회식하기 좋은 식당', '단체석 맛집'],
+				avoid: '너무 사적인 분위기나 대화가 어려운 장소'
+			};
+		case 'group':
+			return {
+				focus: '여러 명이 예약과 이동을 맞추기 쉬운 코스',
+				searchHints: ['단체 체험', '보드게임', '방탈출', '공원'],
+				restaurantHints: ['단체석', '예약 가능한 맛집'],
+				avoid: '좌석이 작거나 인원 변경에 취약한 장소'
+			};
+		case 'solo':
+		default:
+			return {
+				focus: '혼자만의 속도와 취향',
+				searchHints: ['전시', '독립서점', '카페', '산책'],
+				restaurantHints: ['혼밥', '작은 카페'],
+				avoid: '혼자 이용하기 부담스러운 단체형 활동'
+			};
+	}
 }
 
 export function formatKrw(value: number) {
@@ -133,6 +436,7 @@ export function timeMeta(availableTime?: string) {
 
 export function sessionRequestText(session: RecommendationSession) {
 	return [
+		companionRelationSummary(session),
 		session.customTime,
 		session.location?.label,
 		...Object.values(session.dynamicAnswers ?? {})
@@ -241,7 +545,7 @@ function applyBudgetUtilization(
 			plannedCost <= budget
 				? `${budgetUsageText}하도록 옵션과 식사까지 잡았어`
 				: budgetText(budget, plannedCost),
-		perPersonText: perPersonText(plannedCost, partyCount(session.situation)),
+		perPersonText: perPersonText(plannedCost, partyCountForSession(session)),
 		routeDetail: appendUniqueSummary(card.routeDetail ?? card.routeSummary, budgetUsageText),
 		badges: [...new Set([badge, ...card.badges])].slice(0, 8)
 	};
@@ -337,7 +641,13 @@ export function buildFollowupQuestions(
 		});
 	}
 
-	const situation = session.situation ?? 'solo';
+	const relationQuestion = relationFollowupQuestion(session);
+	if (relationQuestion && questions.length < 2) questions.push(relationQuestion);
+
+	const situation =
+		session.situation ??
+		primarySituationFromRelations(companionRelationsForSession(session)) ??
+		'solo';
 	const situationQuestion: Record<Situation, FollowupQuestion> = {
 		solo: {
 			id: 'solo_mood',
@@ -381,7 +691,7 @@ export function buildFollowupQuestions(
 		}
 	};
 
-	questions.push(situationQuestion[situation]);
+	if (questions.length < 2) questions.push(situationQuestion[situation]);
 
 	if (profile.spendingStyle === 'value' && questions.length < 2) {
 		questions.push({
@@ -397,12 +707,46 @@ export function buildFollowupQuestions(
 	return questions.slice(0, 2);
 }
 
+function relationFollowupQuestion(session: RecommendationSession): FollowupQuestion | null {
+	const relations = companionRelationsForSession(session).filter((relation) => relation !== 'solo');
+	if (relations.length < 2) return null;
+	const labels = relations.map(companionRelationLabel).join(', ');
+	if (relations.some((relation) => ['child', 'baby'].includes(relation))) {
+		return {
+			id: 'relation_balance_child',
+			prompt: `${labels} 같이 가는구나. 누구 컨디션을 제일 먼저 맞출까?`,
+			options: [
+				{ id: 'child_first', label: '아이 먼저', value: 'child_first' },
+				{ id: 'adults_balance', label: '어른도 같이', value: 'adults_balance' }
+			]
+		};
+	}
+	if (relations.some((relation) => ['mother', 'father', 'parent'].includes(relation))) {
+		return {
+			id: 'relation_balance_parent',
+			prompt: `${labels} 같이면 이동 편한 쪽이 좋아, 같이 즐기는 쪽이 좋아?`,
+			options: [
+				{ id: 'comfort_first', label: '편한 동선', value: 'comfort_first' },
+				{ id: 'shared_memory', label: '같이 즐길 것', value: 'shared_memory' }
+			]
+		};
+	}
+	return {
+		id: 'relation_balance',
+		prompt: `${labels} 다 같이 만족하려면 어떤 쪽이 좋아?`,
+		options: [
+			{ id: 'talk_safe', label: '대화하기 좋게', value: 'talk_safe' },
+			{ id: 'active_shared', label: '같이 활동', value: 'active_shared' }
+		]
+	};
+}
+
 export function composeRecommendations(
 	profile: UserProfile,
 	session: RecommendationSession
 ): RecommendationCard[] {
 	const budget = Math.max(session.budgetTotal ?? 50000, 10000);
-	const people = partyCount(session.situation);
+	const people = partyCountForSession(session);
 	const baby = session.companionConstraints.hasBaby;
 	const meta = timeMeta(session.availableTime);
 	const resultType = meta.type;
@@ -442,9 +786,54 @@ export function composeRecommendations(
 			);
 
 	return applyTimeUtilization(
-		applyOnboardingFreeformHints(applyMbtiHints(cards, profile, baby), profile, session, baby),
+		applyRelationHints(
+			applyOnboardingFreeformHints(applyMbtiHints(cards, profile, baby), profile, session, baby),
+			session
+		),
 		session
 	);
+}
+
+function applyRelationHints(cards: RecommendationCard[], session: RecommendationSession) {
+	const relations = companionRelationsForSession(session).filter((relation) => relation !== 'solo');
+	if (!relations.length) return cards;
+	const labels = relations.map(companionRelationLabel);
+	const commonFit = relationCompanionFit(session);
+
+	return cards.map((card, index) => {
+		const focusRelation = relations[index] ?? relations[index % relations.length];
+		const focus = companionRelationOptions.find((option) => option.id === focusRelation);
+		const focusText = focus
+			? `${focus.label} 기준으로는 ${focus.recommendationFocus}을 먼저 봤어.`
+			: '';
+		const multiText =
+			relations.length > 1
+				? `${labels.join(', ')}가 같이 움직이는 조합이라 카드마다 우선순위를 다르게 잡았어.`
+				: `${labels[0]}와 함께하는 상황을 먼저 봤어.`;
+		return {
+			...card,
+			label: relations.length > 1 && focus ? `${focus.label} 배려픽` : card.label,
+			reason: `${card.reason} ${multiText} ${focusText}`.trim(),
+			companionFit: [...new Set([...commonFit, ...card.companionFit])].slice(0, 8),
+			badges: [
+				...new Set([
+					...(relations.length > 1 ? ['관계별 우선순위'] : []),
+					...labels.slice(0, 3).map((label) => `${label} 동행`),
+					...card.badges
+				])
+			].slice(0, 8)
+		};
+	});
+}
+
+function relationCompanionFit(session: RecommendationSession) {
+	return companionRelationsForSession(session)
+		.filter((relation) => relation !== 'solo')
+		.map((relation) => {
+			const option = companionRelationOptions.find((item) => item.id === relation);
+			return option ? `${option.label}: ${option.recommendationFocus}` : '';
+		})
+		.filter(Boolean);
 }
 
 function mbtiHint(profile: UserProfile, baby: boolean) {
@@ -579,7 +968,10 @@ function baseRecommendations(
 	wantsQuiet: boolean,
 	wantsIndoor: boolean
 ) {
-	switch (session.situation) {
+	switch (
+		session.situation ??
+		primarySituationFromRelations(companionRelationsForSession(session))
+	) {
 		case 'friend':
 			return friendRecommendations(
 				session,

@@ -12,8 +12,9 @@ import type {
 } from '$lib/sai/candidates';
 import {
 	availableSessionMinutes,
+	companionRelationStrategy,
 	hasFlightIntent,
-	partyCount,
+	partyCountForSession,
 	sessionRequestText
 } from '$lib/sai/recommendations';
 import type { RecommendationSession, UserProfile } from '$lib/sai/types';
@@ -891,7 +892,7 @@ async function getCatchtableAvailability(
 				body: JSON.stringify({
 					shop_ref: restaurant.id,
 					date: selectedDate,
-					person: partyCount(input.session.situation),
+					person: partyCountForSession(input.session),
 					table_type: '_ALL_',
 					visit_time: visitTime
 				}),
@@ -1999,6 +2000,7 @@ function apiFuseActivityQueries(input: CandidateInput) {
 	const plannedQueries = input.queryPlan?.activityQueries ?? [];
 	const freeformKeyword = freeformActivityKeyword(input.profile, input.session);
 	const baby = input.session.companionConstraints.hasBaby;
+	const relationQueries = relationActivityQueries(input);
 	const base = baby
 		? [`${location} 키즈카페`, `${location} 실내놀이터`, `${location} 유모차 실내`]
 		: blocksLongActivity(input.session)
@@ -2008,7 +2010,7 @@ function apiFuseActivityQueries(input: CandidateInput) {
 				: [`${location} 원데이클래스`, `${location} 체험`, `${location} 산책`];
 	return [
 		...new Set(
-			[...plannedQueries, freeformKeyword, ...base]
+			[...plannedQueries, freeformKeyword, ...relationQueries, ...base]
 				.filter((value): value is string => Boolean(value))
 				.filter((query) => !isBlockedForSession(input, query))
 		)
@@ -2019,13 +2021,18 @@ function restaurantPlaceQueries(input: CandidateInput) {
 	const location = input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울';
 	const plannedQueries = input.queryPlan?.restaurantQueries ?? [];
 	const baby = input.session.companionConstraints.hasBaby;
+	const relationQueries = relationRestaurantQueries(input);
 	const base = baby
 		? [`${location} 키즈 프렌들리 카페`, `${location} 가족 식당`, `${location} 넓은 좌석 카페`]
 		: blocksLongActivity(input.session)
 			? [`${location} 카페`, `${location} 디저트`, `${location} 가벼운 식사`]
 			: [`${location} 맛집`, `${location} 카페`, `${location} 캐주얼 다이닝`];
 	return [
-		...new Set([...plannedQueries, ...base].filter((query) => !isBlockedForSession(input, query)))
+		...new Set(
+			[...plannedQueries, ...relationQueries, ...base].filter(
+				(query) => !isBlockedForSession(input, query)
+			)
+		)
 	];
 }
 
@@ -2191,6 +2198,7 @@ function myrealtripSearchKeywords(input: CandidateInput) {
 	const locationKeyword = input.session.location?.label.includes('서울') ? '서울' : '';
 	const plannedKeywords = input.queryPlan?.myrealtripKeywords ?? [];
 	const freeformKeyword = freeformActivityKeyword(input.profile, input.session);
+	const relationKeywords = relationMyrealtripKeywords(input);
 	const preferenceKeyword = input.session.companionConstraints.hasBaby
 		? '키즈'
 		: blocksLongActivity(input.session)
@@ -2200,11 +2208,38 @@ function myrealtripSearchKeywords(input: CandidateInput) {
 				: '체험';
 	return [
 		...new Set(
-			[...plannedKeywords, locationKeyword, freeformKeyword, preferenceKeyword, '티켓']
+			[
+				...plannedKeywords,
+				locationKeyword,
+				freeformKeyword,
+				...relationKeywords,
+				preferenceKeyword,
+				'티켓'
+			]
 				.filter((value): value is string => Boolean(value))
 				.filter((keyword) => !isBlockedForSession(input, keyword))
 		)
 	];
+}
+
+function relationActivityQueries(input: CandidateInput) {
+	const location = input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울';
+	return companionRelationStrategy(input.session)
+		.filter((item) => item.relation !== 'solo')
+		.flatMap((item) => item.searchHints.slice(0, 2).map((hint) => `${location} ${hint}`));
+}
+
+function relationRestaurantQueries(input: CandidateInput) {
+	const location = input.session.location?.label ?? input.profile.recentLocation?.label ?? '서울';
+	return companionRelationStrategy(input.session)
+		.filter((item) => item.relation !== 'solo')
+		.flatMap((item) => item.restaurantHints.slice(0, 1).map((hint) => `${location} ${hint}`));
+}
+
+function relationMyrealtripKeywords(input: CandidateInput) {
+	return companionRelationStrategy(input.session)
+		.filter((item) => item.relation !== 'solo')
+		.flatMap((item) => item.searchHints.slice(0, 1));
 }
 
 function flightSearchPlans(input: CandidateInput): FlightSearchPlan[] {

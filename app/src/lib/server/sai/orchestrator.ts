@@ -9,10 +9,14 @@ import type {
 import {
 	applyTimeUtilization,
 	availableSessionMinutes,
+	companionContextText,
+	companionRelationPromptGuide,
+	companionRelationSummary,
+	companionRelationStrategy,
 	composeRecommendations,
 	formatKrw,
 	hasFlightIntent,
-	partyCount,
+	partyCountForSession,
 	sessionRequestText
 } from '$lib/sai/recommendations';
 import type {
@@ -251,6 +255,9 @@ async function requestOpenAICards(input: {
 									'사용자의 시간, 총 예산, 위치, 날씨, 동행 상황, 온보딩 프로필, 후보 API 결과를 종합해 실행 가능한 추천 카드 3개를 만든다.',
 									'시간과 예산은 다시 묻지 않는다.',
 									'현재 세션의 customTime, dynamicAnswers, location은 온보딩보다 나중에 말한 조건이다. 온보딩 취향과 충돌하면 현재 세션 조건을 우선한다.',
+									'현재 세션의 companionRelations는 함께 움직이는 실제 관계 목록이다. 여러 관계가 있으면 3개 카드가 모두 같은 방향이면 안 되고, 엄마/친구/아내/아이처럼 각 관계가 좋아할 포인트를 카드별로 다르게 배분한다.',
+									'여러 관계가 선택되면 카드마다 우선 관계를 다르게 잡고 label, reason, companionFit, badges에 어떤 관계를 배려했는지 드러낸다.',
+									'같은 장소명이나 같은 활동 유형 3개를 반복하지 말고, 부모님 편의/친구와 대화/배우자 분위기/아이 안전처럼 카드별 선택 이유가 갈라지게 만든다.',
 									'MBTI는 추천 톤과 활동 성향 보정에만 사용하고 시간, 예산, 안전 조건보다 우선하지 않는다.',
 									'profile.onboardingFreeformAnswers는 사용자가 온보딩에서 말이나 문장으로 답한 원문 Q/A다. 선택지보다 구체적인 취향 신호로 보고 추천 후보, 이유, 배지에 반영한다.',
 									'아기 동반이면 부모 취향보다 아기 안전, 유모차/수유실/기저귀 교체/주차, 짧은 동선을 먼저 본다.',
@@ -282,6 +289,10 @@ async function requestOpenAICards(input: {
 								text: JSON.stringify({
 									requestContext: {
 										currentRequestText: sessionRequestText(input.session),
+										companionSummary: companionRelationSummary(input.session),
+										companionContext: companionContextText(input.session),
+										companionGuide: companionRelationPromptGuide(input.session),
+										companionStrategy: companionRelationStrategy(input.session),
 										availableMinutes: availableSessionMinutes(input.session),
 										flightIntent: hasFlightIntent(input.session)
 									},
@@ -439,7 +450,7 @@ function applyCandidateBundle(
 		const estimatedCost = flight?.price
 			? Math.max(card.estimatedCost, flight.price)
 			: card.estimatedCost;
-		const people = partyCount(session.situation);
+		const people = partyCountForSession(session);
 
 		return {
 			...card,
@@ -657,7 +668,7 @@ function applySessionGuards(cards: RecommendationCard[], session: Recommendation
 	const longActivityBlocked = blocksLongActivity(session);
 	if (!singleActivityWindow && !longActivityBlocked) return cards;
 	const budget = Math.max(session.budgetTotal ?? 50000, 10000);
-	const people = partyCount(session.situation);
+	const people = partyCountForSession(session);
 
 	return cards.map((card) => {
 		const safeItems = longActivityBlocked
@@ -858,6 +869,7 @@ function applyHistoryHints(cards: RecommendationCard[], histories: Recommendatio
 function summarizeHistories(histories: RecommendationHistoryItem[]) {
 	return histories.slice(0, 6).map((history) => ({
 		situation: history.session.situation,
+		companionSummary: companionRelationSummary(history.session),
 		availableTime: history.session.availableTime,
 		budgetTotal: history.session.budgetTotal,
 		clickedCardIds: history.clickedCardIds,

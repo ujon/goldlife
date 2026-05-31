@@ -1,5 +1,10 @@
 import { env } from '$env/dynamic/private';
-import { buildFollowupQuestions } from '$lib/sai/recommendations';
+import {
+	buildFollowupQuestions,
+	companionContextText,
+	companionRelationPromptGuide,
+	companionRelationSummary
+} from '$lib/sai/recommendations';
 import type {
 	FollowupQuestion,
 	RecommendationHistoryItem,
@@ -75,13 +80,16 @@ async function tryExaoneFollowups(
 						{
 							role: 'system',
 							content:
-								'사이(SAI)의 귀여운 한국어 코치다. 추천 전 추가 질문 1-2개만 JSON으로 만든다. 시간, 예산, MBTI, 이미 받은 온보딩 자유 문장 답변과 동행 제약은 다시 묻지 않는다.'
+								'사이(SAI)의 귀여운 한국어 코치다. 추천 전 추가 질문 1-2개만 JSON으로 만든다. 시간, 예산, MBTI, 이미 받은 온보딩 자유 문장 답변과 동행 제약은 다시 묻지 않는다. companionRelations가 여러 개면 관계별 우선순위를 가볍게 확인하되 이미 선택한 관계 자체는 다시 묻지 않는다.'
 						},
 						{
 							role: 'user',
 							content: JSON.stringify({
 								profile,
 								session,
+								companionSummary: companionRelationSummary(session),
+								companionContext: companionContextText(session),
+								companionGuide: companionRelationPromptGuide(session),
 								histories: summarizeHistories(histories),
 								fallback
 							})
@@ -148,6 +156,7 @@ async function tryOpenAIFollowups(
 										'시간과 총 예산, MBTI는 이미 받았으므로 절대 다시 묻지 않는다.',
 										'profile.onboardingFreeformAnswers에 있는 온보딩 자유 문장 답변도 이미 받은 취향으로 보고 반복해서 묻지 않는다.',
 										'상황, 아기 동반 여부, 핵심 아기 편의도 이미 받았으므로 다시 묻지 말고 세부 조건만 보강한다.',
+										'companionRelations가 여러 개면 엄마/친구/아내/아이 등 관계별 만족 포인트의 우선순위를 묻는다. 이미 고른 관계를 다시 묻지는 않는다.',
 										'짧고 친근한 반말 톤을 사용한다.'
 									].join('\n')
 								}
@@ -161,6 +170,9 @@ async function tryOpenAIFollowups(
 									text: JSON.stringify({
 										profile,
 										session,
+										companionSummary: companionRelationSummary(session),
+										companionContext: companionContextText(session),
+										companionGuide: companionRelationPromptGuide(session),
 										histories: summarizeHistories(histories),
 										fallback
 									})
@@ -206,6 +218,7 @@ function normalizeQuestions(value: unknown, fallback: FollowupQuestion[]) {
 function summarizeHistories(histories: RecommendationHistoryItem[]) {
 	return histories.slice(0, 4).map((history) => ({
 		situation: history.session.situation,
+		companionSummary: companionRelationSummary(history.session),
 		availableTime: history.session.availableTime,
 		budgetTotal: history.session.budgetTotal,
 		clickedCardIds: history.clickedCardIds,

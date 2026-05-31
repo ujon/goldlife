@@ -6,18 +6,21 @@
 	import {
 		applyTimeUtilization,
 		buildFollowupQuestions,
+		companionRelationOptions,
+		companionRelationSummary,
+		normalizeCompanionRelations,
 		composeRecommendations,
 		createRecommendationSession,
 		dislikeReasons,
 		formatKrw,
 		likeReasons,
-		partyCount,
-		situationLabel,
-		situationOptions,
+		partyCountForSession,
+		primarySituationFromRelations,
 		timeMeta
 	} from '$lib/sai/recommendations';
 	import type {
 		AuthMode,
+		CompanionRelation,
 		FeedbackRecord,
 		FollowupQuestion,
 		LocationSuggestion,
@@ -29,7 +32,6 @@
 		RecommendationHistoryItem,
 		RecommendationSession,
 		Screen,
-		Situation,
 		UserProfile
 	} from '$lib/sai/types';
 
@@ -355,9 +357,11 @@
 			? isPendingOnboardingAnswerReady(currentOnboardingQuestion, onboardingAnswerInput)
 			: onboardingAnswered
 	);
-	let selectedSituation = $derived(
-		situationOptions.find((option) => option.id === session.situation)
+	let selectedCompanionRelations = $derived(session.companionRelations ?? []);
+	let selectedCompanionRelationOptions = $derived(
+		companionRelationOptions.filter((option) => selectedCompanionRelations.includes(option.id))
 	);
+	let selectedCompanionSummary = $derived(companionRelationSummary(session));
 	let timeRangeSummary = $derived(
 		timeRangeText(session.startDateTime ?? '', session.endDateTime ?? '')
 	);
@@ -1014,25 +1018,57 @@
 		startSpeech('time');
 	}
 
-	function setSituation(situation: Situation) {
-		session.situation = situation;
+	function setCompanionRelations(relations: CompanionRelation[]) {
+		const normalized = normalizeCompanionRelations(relations);
+		session.companionRelations = normalized;
+		session.companionConstraints = {
+			...session.companionConstraints,
+			relations: normalized,
+			hasBaby: session.companionConstraints.hasBaby || normalized.includes('baby')
+		};
+		session.situation = primarySituationFromRelations(normalized);
 	}
 
-	function situationFromText(text: string): Situation | null {
+	function toggleCompanionRelation(relation: CompanionRelation) {
+		const current = session.companionRelations ?? [];
+		const next = current.includes(relation)
+			? current.filter((item) => item !== relation)
+			: [...current, relation];
+		setCompanionRelations(next);
+	}
+
+	function companionRelationsFromText(text: string): CompanionRelation[] {
 		const normalized = text.replace(/\s/g, '').toLowerCase();
-		if (!normalized) return null;
-		if (/혼자|나혼자|솔로|혼놀|나만/.test(normalized)) return 'solo';
-		if (/친구|친한|둘이|둘/.test(normalized)) return 'friend';
-		if (/커플|연인|애인|데이트|남자친구|여자친구|남친|여친/.test(normalized)) return 'couple';
-		if (/가족|부모|엄마|아빠|아이|아기|영유아|동생|형제|자매/.test(normalized)) return 'family';
-		if (/동료|회사|직장|모임|팀|단체|회식/.test(normalized)) return 'group';
-		return null;
+		if (!normalized) return [];
+		const patterns: Array<{ relation: CompanionRelation; pattern: RegExp }> = [
+			{ relation: 'solo', pattern: /혼자|나혼자|솔로|혼놀|나만/ },
+			{ relation: 'friend', pattern: /친구|친한친구|친구랑|친구와/ },
+			{
+				relation: 'spouse',
+				pattern: /아내|와이프|배우자|남편|신랑|커플|연인|애인|데이트|남자친구|여자친구|남친|여친/
+			},
+			{ relation: 'mother', pattern: /엄마|어머니|모친/ },
+			{ relation: 'father', pattern: /아빠|아버지|부친/ },
+			{ relation: 'parent', pattern: /부모님|부모/ },
+			{ relation: 'baby', pattern: /아기|영유아|유모차|수유|기저귀/ },
+			{ relation: 'child', pattern: /아이|자녀|애들|어린이|초등|중학생|고등학생/ },
+			{ relation: 'sibling', pattern: /동생|형제|자매|누나|언니|형|오빠/ },
+			{ relation: 'coworker', pattern: /동료|회사|직장|회식/ },
+			{ relation: 'group', pattern: /모임|팀|단체|여러명|여럿/ }
+		];
+		return normalizeCompanionRelations(
+			patterns
+				.map(({ relation, pattern }) => ({ relation, index: normalized.search(pattern) }))
+				.filter((match) => match.index >= 0)
+				.sort((a, b) => a.index - b.index)
+				.map((match) => match.relation)
+		);
 	}
 
 	function applySituationTranscript(text: string) {
 		customSituationInput = text;
-		const selected = situationFromText(text);
-		if (selected) setSituation(selected);
+		const selected = companionRelationsFromText(text);
+		if (selected.length) setCompanionRelations(selected);
 		const normalized = text.replace(/\s/g, '');
 		if (/아기|영유아|유모차|수유|기저귀/.test(normalized)) {
 			session.companionConstraints = {
@@ -1052,10 +1088,10 @@
 	}
 
 	function continueSituation() {
-		if (!session.situation && customSituationInput.trim()) {
+		if (!selectedCompanionRelationOptions.length && customSituationInput.trim()) {
 			applySituationTranscript(customSituationInput);
 		}
-		if (!session.situation) return;
+		if (!selectedCompanionRelationOptions.length) return;
 		openRecommendationStep('budget', 'budget');
 	}
 
@@ -1402,7 +1438,7 @@
 			const estimatedCost = flight?.price
 				? Math.max(card.estimatedCost, flight.price)
 				: card.estimatedCost;
-			const people = partyCount(session.situation);
+			const people = partyCountForSession(session);
 
 			return {
 				...card,
@@ -2983,7 +3019,7 @@
 						<div class="history-list">
 							{#each recentHistory as item (item.session.id)}
 								<button class="history-chip" type="button" onclick={() => loadHistory(item)}>
-									<span>{situationLabel(item.session.situation)}</span>
+									<span>{companionRelationSummary(item.session)}</span>
 									<strong>{item.cards[0]?.label ?? '추천'}</strong>
 								</button>
 							{/each}
@@ -2996,22 +3032,35 @@
 				{@render recommendationCoach(
 					'추천 질문 2/4',
 					'오늘은 누구랑 같이 움직여?',
-					'혼자여도 좋고, 친구나 가족이랑 가도 좋아. 함께할 구성원만 알려줘.',
+					'엄마, 친구, 아내, 아이처럼 함께할 사람을 모두 골라줘. 관계별로 다르게 맞춰볼게.',
 					'situation'
 				)}
 
 				<div class="onboarding-answer-panel recommendation-answer-panel">
+					<div class="relation-picker" aria-label="함께하는 관계 선택">
+						{#each companionRelationOptions as option (option.id)}
+							<button
+								class={`relation-option ${selectedCompanionRelations.includes(option.id) ? 'active' : ''}`}
+								type="button"
+								onclick={() => toggleCompanionRelation(option.id)}
+								aria-pressed={selectedCompanionRelations.includes(option.id)}
+							>
+								<span>{option.icon}</span>
+								<strong>{option.label}</strong>
+							</button>
+						{/each}
+					</div>
 					<label class="field compact">
 						<span>직접 말 남기기</span>
 						<input
 							value={customSituationInput}
 							oninput={handleSituationAnswerInput}
-							placeholder="예: 친구랑 둘이 가 / 아기랑 가족끼리"
+							placeholder="예: 엄마랑 친구랑 / 아내랑 아이와 함께"
 						/>
 					</label>
 					<p>
-						{selectedSituation
-							? `${selectedSituation.label} 기준으로 볼게.`
+						{selectedCompanionRelationOptions.length
+							? `${selectedCompanionSummary} 기준으로 볼게.`
 							: '말로 알려줘도 내가 구성원을 골라볼게.'}
 					</p>
 				</div>
@@ -3021,7 +3070,8 @@
 						class="primary"
 						type="button"
 						onclick={continueSituation}
-						disabled={!selectedSituation && !situationFromText(customSituationInput)}
+						disabled={!selectedCompanionRelationOptions.length &&
+							!companionRelationsFromText(customSituationInput).length}
 					>
 						다음으로
 					</button>
@@ -3186,7 +3236,7 @@
 				<div class="results-header">
 					<div>
 						<p class="eyebrow">
-							{situationLabel(session.situation)} · {candidateBundle?.weather.label ??
+							{companionRelationSummary(session)} · {candidateBundle?.weather.label ??
 								session.weatherSnapshot.label}
 						</p>
 						<h1>이 3개로 추렸어</h1>
@@ -3891,6 +3941,68 @@
 
 	.recommendation-answer-panel textarea {
 		min-height: 86px;
+	}
+
+	.relation-picker {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 7px;
+	}
+
+	.relation-option {
+		display: grid;
+		min-width: 0;
+		min-height: 58px;
+		align-content: center;
+		justify-items: center;
+		gap: 5px;
+		border: 1px solid var(--line);
+		border-radius: 16px;
+		background: #fff;
+		color: var(--ink2);
+		padding: 8px 6px;
+		box-shadow: 0 6px 14px rgba(120, 110, 160, 0.06);
+		cursor: pointer;
+	}
+
+	.relation-option span {
+		display: grid;
+		width: 25px;
+		height: 25px;
+		place-items: center;
+		border-radius: 999px;
+		background: #f4eff8;
+		color: var(--indigo);
+		font-size: 11px;
+		font-weight: 900;
+	}
+
+	.relation-option strong {
+		overflow: hidden;
+		width: 100%;
+		font-size: 12px;
+		font-weight: 900;
+		line-height: 1.2;
+		text-align: center;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.relation-option.active {
+		border-color: rgba(91, 108, 255, 0.38);
+		background: linear-gradient(135deg, rgba(255, 107, 94, 0.14), rgba(91, 108, 255, 0.13));
+		color: var(--ink);
+		box-shadow: 0 10px 22px rgba(91, 108, 255, 0.14);
+	}
+
+	.relation-option.active span {
+		background: linear-gradient(135deg, var(--coral), var(--indigo));
+		color: #fff;
+	}
+
+	.relation-option:focus-visible {
+		outline: 3px solid rgba(91, 108, 255, 0.22);
+		outline-offset: 2px;
 	}
 
 	.datetime-grid {

@@ -16,6 +16,19 @@ export type Screen =
 
 export type Situation = 'solo' | 'friend' | 'couple' | 'family' | 'group';
 
+export type CompanionRelation =
+	| 'solo'
+	| 'friend'
+	| 'spouse'
+	| 'mother'
+	| 'father'
+	| 'parent'
+	| 'child'
+	| 'baby'
+	| 'sibling'
+	| 'coworker'
+	| 'group';
+
 export type MbtiType =
 	| ''
 	| 'ISTJ'
@@ -96,6 +109,7 @@ export type WeatherSnapshot = {
 };
 
 export type CompanionConstraints = {
+	relations?: CompanionRelation[];
 	hasBaby: boolean;
 	strollerRequired: boolean;
 	babyCarrierOk: boolean;
@@ -122,6 +136,7 @@ export type UserProfile = {
 export type RecommendationSession = {
 	id: string;
 	situation?: Situation;
+	companionRelations: CompanionRelation[];
 	location?: LocationValue;
 	availableTime?: string;
 	customTime?: string;

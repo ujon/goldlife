@@ -1,6 +1,11 @@
 import { env } from '$env/dynamic/private';
 import type { CandidateBundle, CandidateQueryPlan } from '$lib/sai/candidates';
 import {
+	companionContextText,
+	companionRelationPromptGuide,
+	companionRelationSummary,
+	companionRelationStrategy,
+	companionRelationsForSession,
 	hasFlightIntent,
 	sessionRequestText,
 	situationLabel,
@@ -54,27 +59,54 @@ export function fallbackCandidateQueryPlan(
 	const flightIntent = hasFlightIntent(session);
 	const culturePreference = profile.activityPreferences.includes('culture');
 	const baby = session.companionConstraints.hasBaby;
-	const activityQueries = longActivityBlocked
+	const relationQueries = relationCandidateQueries(location, session);
+	const baseActivityQueries = longActivityBlocked
 		? compactActivityQueries(location, baby, culturePreference, campingPreference)
 		: longerSessionActivityQueries(location, baby, culturePreference, campingPreference);
-	const restaurantQueries = baby
+	const activityQueries = uniqueStrings([
+		...relationQueries.activityQueries,
+		...baseActivityQueries
+	])
+		.filter(
+			(query) =>
+				!containsExcludedKeyword(query, longActivityBlocked ? LONG_ACTIVITY_EXCLUDED_KEYWORDS : [])
+		)
+		.slice(0, 5);
+	const baseRestaurantQueries = baby
 		? [`${location} 키즈 프렌들리 카페`, `${location} 가족 식당`]
 		: longActivityBlocked
 			? [`${location} 카페`, `${location} 디저트`, `${location} 가벼운 식사`]
 			: [`${location} 맛집`, `${location} 카페`, `${location} 캐주얼 다이닝`];
-	const myrealtripKeywords = longActivityBlocked
+	const restaurantQueries = uniqueStrings([
+		...relationQueries.restaurantQueries,
+		...baseRestaurantQueries
+	]).slice(0, 4);
+	const baseMyrealtripKeywords = longActivityBlocked
 		? [location.includes('서울') ? '서울 티켓' : '티켓', '전시']
 		: campingPreference
 			? [location.includes('서울') ? '서울 캠핑' : '캠핑', '체험']
 			: [culturePreference ? '티켓' : '체험', '전시'];
+	const myrealtripKeywords = uniqueStrings([
+		...relationQueries.myrealtripKeywords,
+		...baseMyrealtripKeywords
+	])
+		.filter(
+			(keyword) =>
+				!containsExcludedKeyword(
+					keyword,
+					longActivityBlocked ? LONG_ACTIVITY_EXCLUDED_KEYWORDS : []
+				)
+		)
+		.slice(0, 4);
+	const preferenceSummary = flightIntent
+		? '이번 추천 요청에서 장거리/해외 이동 의도가 감지되어 온보딩 취향보다 현재 입력을 우선하고 항공편 후보를 함께 조회한다.'
+		: longActivityBlocked
+			? '사용 가능 시간이 짧아 글램핑/캠핑장/숙박형 후보는 제외하고 근거리 카페, 전시, 짧은 체험만 조회한다.'
+			: '온보딩 취향과 최근 히스토리를 반영해 활동, 맛집, 이동 후보를 조회한다.';
 
 	return {
 		source: 'fallback',
-		preferenceSummary: flightIntent
-			? '이번 추천 요청에서 장거리/해외 이동 의도가 감지되어 온보딩 취향보다 현재 입력을 우선하고 항공편 후보를 함께 조회한다.'
-			: longActivityBlocked
-				? '사용 가능 시간이 짧아 글램핑/캠핑장/숙박형 후보는 제외하고 근거리 카페, 전시, 짧은 체험만 조회한다.'
-				: '온보딩 취향과 최근 히스토리를 반영해 활동, 맛집, 이동 후보를 조회한다.',
+		preferenceSummary: [preferenceSummary, relationQueries.summary].filter(Boolean).join(' '),
 		activityQueries,
 		restaurantQueries,
 		myrealtripKeywords,
@@ -135,6 +167,8 @@ async function tryExaoneCandidatePlan(
 								'너는 사이(SAI)의 API 조회 계획 담당자다.',
 								'현재 세션의 시간, 예산, 위치, 동행, 방금 수집한 API 후보, DB 추천 히스토리를 함께 보고 어떤 API에 어떤 값을 조회할지 JSON으로만 답한다.',
 								'현재 세션의 customTime, dynamicAnswers, location은 온보딩 답변보다 최신 입력이다. 서로 충돌하면 현재 세션 입력을 우선한다.',
+								'companionRelations가 여러 개면 관계별로 다른 검색 의도를 만든다. 예: 엄마는 이동 편의/조용한 식사, 친구는 대화/체험, 아내·남편은 분위기, 아이는 안전하고 지루하지 않은 활동을 분리해서 반영한다.',
+								'activityQueries, restaurantQueries, myrealtripKeywords에는 같은 의도의 검색어만 반복하지 말고 관계별 검색어를 섞는다.',
 								'시간 제약은 hard constraint다. 1-3시간 또는 240분 이하 세션이면 글램핑, 캠핑장, 캠핑, 야영, 카라반, 숙박, 당일치기, 등산, 트레킹 같은 긴 활동은 조회값과 표시 후보에서 제외한다.',
 								'취향 신호는 조회어에 반영하되 시간 제약을 어기지 않는다. 예를 들어 캠핑 취향 + 2시간이면 글램핑이 아니라 근거리 바비큐 카페, 전시, 짧은 체험 쪽으로 바꾼다.',
 								'현재 요청에 해외, 아주 멀리, 장거리, 비행기, 항공, 공항, 도시명이 포함되면 API Fuse naver-flight 조회를 operations에 포함한다.',
@@ -304,6 +338,37 @@ function longerSessionActivityQueries(
 	return [`${location} 원데이클래스`, `${location} 체험`, `${location} 산책`];
 }
 
+function relationCandidateQueries(location: string, session: RecommendationSession) {
+	const strategy = companionRelationStrategy(session).filter((item) => item.relation !== 'solo');
+	if (!strategy.length) {
+		return {
+			summary: '',
+			activityQueries: [] as string[],
+			restaurantQueries: [] as string[],
+			myrealtripKeywords: [] as string[]
+		};
+	}
+
+	const relationLabels = strategy.map((item) => item.label).join(', ');
+	const activityQueries = strategy.flatMap((item) =>
+		item.searchHints.slice(0, 2).map((hint) => `${location} ${hint}`)
+	);
+	const restaurantQueries = strategy.flatMap((item) =>
+		item.restaurantHints.slice(0, 1).map((hint) => `${location} ${hint}`)
+	);
+	const myrealtripKeywords = strategy.flatMap((item) => item.searchHints.slice(0, 1));
+
+	return {
+		summary:
+			strategy.length > 1
+				? `${relationLabels} 관계가 함께 움직이므로 검색 후보도 관계별 우선순위가 갈리게 구성한다.`
+				: `${relationLabels} 동행 조건에 맞는 후보를 우선 조회한다.`,
+		activityQueries,
+		restaurantQueries,
+		myrealtripKeywords
+	};
+}
+
 function onboardingPreferenceText(profile: UserProfile) {
 	return (profile.onboardingFreeformAnswers ?? []).map((answer) => answer.answer).join(' ');
 }
@@ -388,6 +453,11 @@ function summarizeSession(session: RecommendationSession) {
 	return {
 		situation: session.situation,
 		situationLabel: situationLabel(session.situation),
+		companionRelations: companionRelationsForSession(session),
+		companionSummary: companionRelationSummary(session),
+		companionContext: companionContextText(session),
+		companionGuide: companionRelationPromptGuide(session),
+		companionStrategy: companionRelationStrategy(session),
 		availableTime: session.availableTime,
 		timeLabel: timeMeta(session.availableTime).label,
 		currentRequestText: sessionRequestText(session),
@@ -406,6 +476,7 @@ function summarizeHistories(histories: RecommendationHistoryItem[]) {
 	return histories.slice(0, 8).map((history) => ({
 		session: {
 			situation: history.session.situation,
+			companionSummary: companionRelationSummary(history.session),
 			availableTime: history.session.availableTime,
 			budgetTotal: history.session.budgetTotal,
 			location: history.session.location?.label
