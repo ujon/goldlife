@@ -3,6 +3,7 @@ import type {
 	FollowupQuestion,
 	LocationValue,
 	RecommendationCard,
+	RecommendationItem,
 	RecommendationSession,
 	Situation,
 	UserProfile,
@@ -130,6 +131,136 @@ export function timeMeta(availableTime?: string) {
 	return timeOptions.find((option) => option.id === availableTime) ?? timeOptions[2];
 }
 
+export function sessionRequestText(session: RecommendationSession) {
+	return [
+		session.customTime,
+		session.location?.label,
+		...Object.values(session.dynamicAnswers ?? {})
+	]
+		.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+		.join(' ');
+}
+
+export function hasFlightIntent(session: RecommendationSession) {
+	return /해외|출국|비행기|항공|공항|아주\s*멀|멀리|장거리|일본|도쿄|오사카|후쿠오카|대만|타이베이|방콕|싱가포르|베트남|다낭|나트랑|홍콩|마카오/i.test(
+		sessionRequestText(session)
+	);
+}
+
+export function availableSessionMinutes(session: RecommendationSession) {
+	const start = session.startDateTime ? new Date(session.startDateTime) : null;
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+		const diffMinutes = Math.round((end.getTime() - start.getTime()) / 60000);
+		if (diffMinutes > 0) return diffMinutes;
+	}
+	if (session.availableTime === 'one_hour') return 60;
+	if (session.availableTime === 'two_three') return 180;
+	if (session.availableTime === 'half_day') return 300;
+	if (session.availableTime === 'day') return 420;
+	if (session.availableTime === 'weekend') return 720;
+	return undefined;
+}
+
+export function formatDurationLabel(minutes: number) {
+	const rounded = Math.max(0, Math.round(minutes));
+	const hours = Math.floor(rounded / 60);
+	const rest = rounded % 60;
+	if (!hours) return `${rest}분`;
+	if (!rest) return `${hours}시간`;
+	return `${hours}시간 ${rest}분`;
+}
+
+export function applyTimeUtilization(
+	cards: RecommendationCard[],
+	session: RecommendationSession
+): RecommendationCard[] {
+	const availableMinutes = availableSessionMinutes(session);
+	if (!availableMinutes) return cards.map((card) => fillDwellTimes(card, session));
+
+	return cards.map((card) => {
+		const filled = fillDwellTimes(card, session);
+		const totalTravel = filled.items.reduce((sum, item) => sum + (item.travelMinutes ?? 0), 0);
+		const currentDwell = filled.items.reduce((sum, item) => sum + (item.dwellMinutes ?? 0), 0);
+		const targetTotal = targetPlannedMinutes(availableMinutes, filled);
+		const extraMinutes = Math.max(0, targetTotal - totalTravel - currentDwell);
+		const expandableIndexes = filled.items
+			.map((item, index) => ({ item, index }))
+			.filter(({ item }) => item.slot !== 'flight');
+		const items = filled.items.map((item, index) => {
+			if (!expandableIndexes.some((entry) => entry.index === index)) return item;
+			const share = Math.floor(extraMinutes / Math.max(expandableIndexes.length, 1));
+			const dwellMinutes = (item.dwellMinutes ?? defaultDwellMinutes(item, session)) + share;
+			return {
+				...item,
+				dwellMinutes,
+				dwellTimeText: dwellText(item, dwellMinutes)
+			};
+		});
+		const plannedMinutes = Math.min(
+			availableMinutes,
+			items.reduce((sum, item) => sum + (item.travelMinutes ?? 0) + (item.dwellMinutes ?? 0), 0)
+		);
+		const timeUsageText = `사용 가능 시간 ${formatDurationLabel(availableMinutes)} 중 약 ${formatDurationLabel(plannedMinutes)} 사용`;
+		const utilizationBadge =
+			plannedMinutes >= availableMinutes * 0.8 ? '시간 꽉 채움' : '여유 시간 남김';
+
+		return {
+			...filled,
+			items,
+			estimatedDuration: formatDurationLabel(plannedMinutes),
+			timeUsageText,
+			routeDetail: appendUniqueSummary(filled.routeDetail ?? filled.routeSummary, timeUsageText),
+			badges: [...new Set([utilizationBadge, '체류시간 예측', ...filled.badges])].slice(0, 8)
+		};
+	});
+}
+
+function fillDwellTimes(card: RecommendationCard, session: RecommendationSession) {
+	return {
+		...card,
+		items: card.items.map((item) => {
+			const dwellMinutes = item.dwellMinutes ?? defaultDwellMinutes(item, session);
+			return {
+				...item,
+				dwellMinutes,
+				dwellTimeText: item.dwellTimeText ?? dwellText(item, dwellMinutes)
+			};
+		})
+	};
+}
+
+function targetPlannedMinutes(availableMinutes: number, card: RecommendationCard) {
+	if (card.items.some((item) => item.slot === 'flight'))
+		return Math.max(60, Math.floor(availableMinutes * 0.92));
+	if (availableMinutes <= 90) return Math.floor(availableMinutes * 0.9);
+	if (availableMinutes <= 240) return Math.floor(availableMinutes * 0.88);
+	return Math.floor(availableMinutes * 0.85);
+}
+
+function defaultDwellMinutes(item: RecommendationItem, session: RecommendationSession) {
+	if (item.slot === 'flight') return item.dwellMinutes ?? 0;
+	if (item.slot === 'food') return session.availableTime === 'one_hour' ? 35 : 70;
+	if (item.slot === 'move') return item.travelMinutes ?? 15;
+	if (item.slot === 'fallback') return 45;
+	if (session.availableTime === 'one_hour') return 45;
+	if (session.availableTime === 'two_three') return 90;
+	if (session.availableTime === 'day' || session.availableTime === 'weekend') return 150;
+	return 110;
+}
+
+function dwellText(item: RecommendationItem, minutes: number) {
+	if (item.slot === 'flight')
+		return minutes ? `비행 약 ${formatDurationLabel(minutes)}` : '항공편 시간 확인';
+	if (item.slot === 'move') return `이동 약 ${formatDurationLabel(minutes)}`;
+	return `체류 약 ${formatDurationLabel(minutes)}`;
+}
+
+function appendUniqueSummary(summary: string, addition: string) {
+	if (!addition || summary.includes(addition)) return summary;
+	return `${summary} · ${addition}`;
+}
+
 export function buildFollowupQuestions(
 	session: RecommendationSession,
 	profile: UserProfile
@@ -239,19 +370,25 @@ export function composeRecommendations(
 	const resultType = meta.type;
 	const location = session.location?.label ?? profile.recentLocation?.label ?? '현재 위치';
 	const answerValues = Object.values(session.dynamicAnswers);
+	const currentText = sessionRequestText(session);
 	const freeformText = onboardingFreeformText(profile);
+	const activityText = currentText || freeformText;
+	const quietText = currentText || freeformText;
 	const wantsIndoor =
 		session.weatherSnapshot.preferIndoor ||
 		answerValues.includes('prefer_indoor') ||
-		answerValues.includes('indoor_nature');
+		answerValues.includes('indoor_nature') ||
+		/실내|비\s*피|날씨\s*무관|덥|춥/i.test(currentText);
 	const wantsActivity =
 		answerValues.includes('shared_activity') ||
 		answerValues.includes('high_energy') ||
-		/캠핑|글램핑|등산|하이킹|트레킹|체험|공방|클래스/i.test(freeformText);
+		/캠핑|글램핑|등산|하이킹|트레킹|체험|공방|클래스|액티비티|활동|멀리|해외|항공|여행/i.test(
+			activityText
+		);
 	const wantsQuiet =
 		answerValues.includes('quiet_reset') ||
 		answerValues.includes('talk_focused') ||
-		/조용|휴식|쉬|집/i.test(freeformText);
+		/조용|휴식|쉬|집|차분|느긋/i.test(quietText);
 
 	const cards = baby
 		? babyRecommendations(session, budget, people, location, resultType, wantsIndoor)
@@ -266,7 +403,10 @@ export function composeRecommendations(
 				wantsIndoor
 			);
 
-	return applyOnboardingFreeformHints(applyMbtiHints(cards, profile, baby), profile, session, baby);
+	return applyTimeUtilization(
+		applyOnboardingFreeformHints(applyMbtiHints(cards, profile, baby), profile, session, baby),
+		session
+	);
 }
 
 function mbtiHint(profile: UserProfile, baby: boolean) {
@@ -309,10 +449,28 @@ function applyOnboardingFreeformHints(
 	if (!answers.length) return cards;
 
 	const combined = onboardingFreeformText(profile);
+	const currentText = sessionRequestText(session);
 	const latest = answers[answers.length - 1];
 	const answerSnippet =
 		latest.answer.length > 34 ? `${latest.answer.slice(0, 34)}...` : latest.answer;
 	const reasonHint = `온보딩에서 "${answerSnippet}"라고 말한 것도 같이 반영했어.`;
+	const sessionOverridesOnboarding =
+		currentText &&
+		/(해외|멀리|항공|여행|조용|휴식|실내|카페|전시|맛집|활동|체험|공방|등산|캠핑|글램핑)/i.test(
+			currentText
+		);
+
+	if (sessionOverridesOnboarding) {
+		return cards.map((item, index) => ({
+			...item,
+			reason:
+				index === 0
+					? `${item.reason} 이번 추천에서 말한 조건을 온보딩 취향보다 먼저 봤어.`
+					: item.reason,
+			badges:
+				index === 0 ? [...new Set(['이번 요청 우선', ...item.badges])].slice(0, 8) : item.badges
+		}));
+	}
 
 	if (!baby && /캠핑|글램핑|야영|camp/i.test(combined)) {
 		if (blocksLongActivity(session)) {

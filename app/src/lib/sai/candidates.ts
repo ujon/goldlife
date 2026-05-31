@@ -86,10 +86,29 @@ export type MobilityCandidate = {
 	label: string;
 	minutes?: number;
 	cost?: number;
-	mode?: 'walk' | 'transit' | 'car' | 'taxi' | 'shared';
+	mode?: 'walk' | 'transit' | 'car' | 'taxi' | 'shared' | 'flight';
 	routeMapUrl?: string;
 	detail?: string;
 	source: 'swing' | 'api_fuse' | 'sai';
+};
+
+export type FlightCandidate = {
+	id: string;
+	title: string;
+	price?: number;
+	source: 'api_fuse' | 'sai';
+	outboundUrl?: string;
+	reservationUrl?: string;
+	departureAirport: string;
+	arrivalAirport: string;
+	departureDate?: string;
+	returnDate?: string;
+	departureTimeText?: string;
+	arrivalTimeText?: string;
+	durationMinutes?: number;
+	durationText?: string;
+	airlineText?: string;
+	tags: string[];
 };
 
 export type CandidateBundle = {
@@ -97,6 +116,7 @@ export type CandidateBundle = {
 	trendKeywords: string[];
 	activities: ActivityCandidate[];
 	restaurants: RestaurantCandidate[];
+	flights: FlightCandidate[];
 	mobility: MobilityCandidate[];
 	statuses: ProviderStatus[];
 	queryPlan?: CandidateQueryPlan;

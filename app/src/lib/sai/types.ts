@@ -146,7 +146,7 @@ export type FollowupQuestion = {
 };
 
 export type RecommendationItem = {
-	slot: 'activity' | 'food' | 'move' | 'fallback';
+	slot: 'activity' | 'food' | 'move' | 'flight' | 'fallback';
 	title: string;
 	price: number;
 	source: 'myrealtrip' | 'api_fuse' | 'genrank' | 'sai';
@@ -165,6 +165,8 @@ export type RecommendationItem = {
 	arrivalTimeText?: string;
 	openingHoursText?: string;
 	thumbnailUrl?: string;
+	dwellMinutes?: number;
+	dwellTimeText?: string;
 };
 
 export type RecommendationCard = {
@@ -183,11 +185,12 @@ export type RecommendationCard = {
 	badges: string[];
 	items: RecommendationItem[];
 	outboundUrl: string;
-	routeTransport?: 'walk' | 'transit' | 'car' | 'taxi' | 'shared';
+	routeTransport?: 'walk' | 'transit' | 'car' | 'taxi' | 'shared' | 'flight';
 	routeMapUrl?: string;
 	routeDetail?: string;
 	reservationUrl?: string;
 	calendarUrl?: string;
+	timeUsageText?: string;
 };
 
 export type FeedbackRecord = {

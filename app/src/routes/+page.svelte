@@ -3,12 +3,14 @@
 	import saiSymbol from '$lib/assets/sai-symbol.svg';
 	import type { CandidateBundle } from '$lib/sai/candidates';
 	import {
+		applyTimeUtilization,
 		buildFollowupQuestions,
 		composeRecommendations,
 		createRecommendationSession,
 		dislikeReasons,
 		formatKrw,
 		likeReasons,
+		partyCount,
 		situationLabel,
 		situationOptions,
 		timeMeta
@@ -1238,7 +1240,10 @@
 		const candidates = await collectCandidateBundle(targetProfile, targetSession);
 		return {
 			cards: scopeCardsToSession(
-				applyCandidateBundle(composeRecommendations(targetProfile, targetSession), candidates),
+				applyTimeUtilization(
+					applyCandidateBundle(composeRecommendations(targetProfile, targetSession), candidates),
+					targetSession
+				),
 				targetSession.id
 			),
 			candidates,
@@ -1291,7 +1296,8 @@
 			const activity = bundle.activities[index % Math.max(bundle.activities.length, 1)];
 			const restaurant = bundle.restaurants[index % Math.max(bundle.restaurants.length, 1)];
 			const mobility = bundle.mobility[index % Math.max(bundle.mobility.length, 1)];
-			const items = card.items.map((item) => {
+			const flight = bundle.flights[index % Math.max(bundle.flights.length, 1)];
+			const mappedItems = card.items.map((item) => {
 				if (item.slot === 'activity' && activity) {
 					return {
 						...item,
@@ -1343,32 +1349,132 @@
 
 				return item;
 			});
-			const externalTags = [...(activity?.tags ?? []), ...(restaurant?.tags ?? [])].slice(0, 2);
+			const items = flight ? mergeFlightItem(mappedItems, flight) : mappedItems;
+			const externalTags = [
+				...(flight?.tags ?? []),
+				...(activity?.tags ?? []),
+				...(restaurant?.tags ?? [])
+			].slice(0, 4);
 			const trendTag = bundle.trendKeywords[index];
 			const badges = [
-				...new Set([...card.badges, ...externalTags, ...(trendTag ? [trendTag] : [])])
+				...new Set([
+					...(flight ? ['항공편 포함', '이번 요청 우선'] : []),
+					...card.badges,
+					...externalTags,
+					...(trendTag ? [trendTag] : [])
+				])
 			].slice(0, 8);
 			const reservationUrl =
-				items.find((item) => item.reservationUrl)?.reservationUrl ?? card.reservationUrl;
+				flight?.reservationUrl ??
+				flight?.outboundUrl ??
+				items.find((item) => item.reservationUrl)?.reservationUrl ??
+				card.reservationUrl;
 			const routeMapUrl =
-				mobility?.routeMapUrl ??
+				flight?.outboundUrl ??
+				(flight ? undefined : mobility?.routeMapUrl) ??
 				items.find((item) => item.routeMapUrl)?.routeMapUrl ??
 				items.find((item) => item.mapUrl)?.mapUrl ??
 				card.routeMapUrl;
+			const estimatedCost = flight?.price
+				? Math.max(card.estimatedCost, flight.price)
+				: card.estimatedCost;
+			const people = partyCount(session.situation);
 
 			return {
 				...card,
+				label: flight ? '항공 포함' : card.label,
+				title: flight ? `${flightDestinationLabel(flight)} 항공편까지 보는 코스` : card.title,
+				reason: flight
+					? `${card.reason} 이번에 말한 장거리/해외 이동 의도를 온보딩 취향보다 우선해서 항공편을 포함했어.`
+					: card.reason,
+				estimatedCost,
+				budgetText: flight?.price
+					? `${flightDestinationLabel(flight)} 항공권 기준 ${formatKrw(flight.price)}부터 확인`
+					: card.budgetText,
+				perPersonText: `1인당 약 ${formatKrw(Math.ceil(estimatedCost / people / 1000) * 1000)}`,
 				items,
 				badges,
 				weatherFit: bundle.weather.preferIndoor ? 'indoor' : card.weatherFit,
-				routeSummary: mobility?.label ?? card.routeSummary,
-				routeTransport: mobility?.mode ?? card.routeTransport,
+				routeSummary: flight ? flightRouteSummary(flight) : (mobility?.label ?? card.routeSummary),
+				routeTransport: flight ? ('flight' as const) : (mobility?.mode ?? card.routeTransport),
 				routeMapUrl,
-				routeDetail: mobility?.detail ?? card.routeDetail,
+				routeDetail: flight ? flightRouteDetail(flight) : (mobility?.detail ?? card.routeDetail),
 				reservationUrl,
 				outboundUrl: reservationUrl ?? routeMapUrl ?? card.outboundUrl
 			};
 		});
+	}
+
+	function mergeFlightItem(
+		items: RecommendationItem[],
+		flight: NonNullable<CandidateBundle['flights'][number]>
+	) {
+		const index = items.findIndex((item) => item.slot === 'flight');
+		const flightItem = flightCandidateToItem(flight, index >= 0 ? items[index] : undefined);
+		if (index >= 0) {
+			return items.map((item, itemIndex) => (itemIndex === index ? flightItem : item));
+		}
+		return [flightItem, ...items];
+	}
+
+	function flightCandidateToItem(
+		flight: NonNullable<CandidateBundle['flights'][number]>,
+		fallback?: RecommendationItem
+	): RecommendationItem {
+		return {
+			slot: 'flight',
+			title: flight.title,
+			price: flight.price ?? fallback?.price ?? 0,
+			source: flight.source,
+			outboundUrl: flight.outboundUrl ?? fallback?.outboundUrl ?? 'https://flight.naver.com',
+			reservationUrl: flight.reservationUrl ?? flight.outboundUrl ?? fallback?.reservationUrl,
+			availabilityText: [
+				flight.airlineText,
+				flight.departureTimeText,
+				flight.returnDate ? `${flight.returnDate} 복귀` : undefined,
+				flight.tags.slice(0, 2).join(' · ')
+			]
+				.filter(Boolean)
+				.join(' · '),
+			arrivalTimeText: flight.arrivalTimeText,
+			travelTimeText: flight.durationText,
+			dwellMinutes: flight.durationMinutes,
+			dwellTimeText: flight.durationText ?? fallback?.dwellTimeText,
+			thumbnailUrl: fallback?.thumbnailUrl
+		};
+	}
+
+	function flightDestinationLabel(flight: NonNullable<CandidateBundle['flights'][number]>) {
+		const airports: Record<string, string> = {
+			KIX: '오사카',
+			FUK: '후쿠오카',
+			NRT: '도쿄',
+			HND: '도쿄',
+			TPE: '타이베이',
+			BKK: '방콕',
+			SIN: '싱가포르',
+			DAD: '다낭',
+			HKG: '홍콩'
+		};
+		return airports[flight.arrivalAirport] ?? flight.arrivalAirport;
+	}
+
+	function flightRouteSummary(flight: NonNullable<CandidateBundle['flights'][number]>) {
+		return [`${flight.departureAirport} → ${flight.arrivalAirport} 항공`, flight.durationText]
+			.filter(Boolean)
+			.join(' · ');
+	}
+
+	function flightRouteDetail(flight: NonNullable<CandidateBundle['flights'][number]>) {
+		return [
+			flight.departureTimeText,
+			flight.arrivalTimeText,
+			flight.durationText,
+			flight.airlineText,
+			flight.returnDate ? `${flight.returnDate} 복귀` : undefined
+		]
+			.filter(Boolean)
+			.join(' · ');
 	}
 
 	function saveHistory(cards: RecommendationCard[]) {
@@ -2090,6 +2196,7 @@
 		if (mode === 'taxi') return '택시';
 		if (mode === 'shared') return '공유 모빌리티';
 		if (mode === 'transit') return '대중교통';
+		if (mode === 'flight') return '항공';
 		return '이동';
 	}
 
@@ -2146,6 +2253,7 @@
 	function compactItemMeta(item: RecommendationItem) {
 		return uniqueText([
 			item.travelTimeText,
+			item.dwellTimeText,
 			item.arrivalTimeText,
 			item.availabilityText,
 			item.openingHoursText,
@@ -2187,6 +2295,9 @@
 	function detailFacts(card: RecommendationCard): DetailFact[] {
 		return [
 			{ key: 'duration', label: '시간', value: card.estimatedDuration },
+			...(card.timeUsageText
+				? [{ key: 'time-usage', label: '시간 사용', value: card.timeUsageText }]
+				: []),
 			{ key: 'cost', label: '예상 비용', value: formatKrw(card.estimatedCost) },
 			{ key: 'per-person', label: '1인당', value: card.perPersonText.replace('1인당 약 ', '') },
 			{ key: 'weather', label: '날씨', value: weatherFitLabel(card) }

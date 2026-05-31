@@ -3,9 +3,18 @@ import type {
 	ActivityCandidate,
 	CandidateBundle,
 	CandidateQueryPlan,
+	FlightCandidate,
 	RestaurantCandidate
 } from '$lib/sai/candidates';
-import { composeRecommendations, formatKrw, partyCount } from '$lib/sai/recommendations';
+import {
+	applyTimeUtilization,
+	availableSessionMinutes,
+	composeRecommendations,
+	formatKrw,
+	hasFlightIntent,
+	partyCount,
+	sessionRequestText
+} from '$lib/sai/recommendations';
 import type {
 	RecommendationCard,
 	RecommendationHistoryItem,
@@ -55,15 +64,18 @@ export async function composeWithOrchestrator(
 		queryPlan
 	);
 	const fallbackCards = scopeCardsToSession(
-		applySessionGuards(
-			applyOperatingStatusGuards(
-				applyTravelTimeGuards(
-					applyHistoryHints(
-						applyCandidateBundle(composeRecommendations(profile, session), candidates),
-						histories
-					),
-					session
-				)
+		applyTimeUtilization(
+			applySessionGuards(
+				applyOperatingStatusGuards(
+					applyTravelTimeGuards(
+						applyHistoryHints(
+							applyCandidateBundle(composeRecommendations(profile, session), candidates, session),
+							histories
+						),
+						session
+					)
+				),
+				session
 			),
 			session
 		),
@@ -124,6 +136,7 @@ function mergeCandidateBundles(
 			8
 		),
 		restaurants: uniqueRestaurants([...refined.restaurants, ...initial.restaurants]).slice(0, 8),
+		flights: uniqueFlights([...refined.flights, ...initial.flights]).slice(0, 4),
 		mobility: [...refined.mobility, ...initial.mobility].slice(0, 6),
 		statuses: [...refined.statuses, ...initial.statuses],
 		queryPlan
@@ -153,6 +166,28 @@ function uniqueRestaurants(candidates: RestaurantCandidate[]) {
 	return candidates.filter((candidate) => {
 		const key = `${candidate.title}-${candidate.address ?? ''}`.replace(/\s/g, '').toLowerCase();
 		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function uniqueFlights(candidates: FlightCandidate[]) {
+	const seen = new Set<string>();
+	return candidates.filter((candidate) => {
+		const key = [
+			candidate.departureAirport,
+			candidate.arrivalAirport,
+			candidate.departureDate,
+			candidate.returnDate,
+			candidate.departureTimeText,
+			candidate.airlineText,
+			candidate.price
+		]
+			.filter(Boolean)
+			.join('-')
+			.replace(/\s/g, '')
+			.toLowerCase();
+		if (!key || seen.has(key)) return false;
 		seen.add(key);
 		return true;
 	});
@@ -215,14 +250,18 @@ async function requestOpenAICards(input: {
 									'너는 사이(SAI)의 추천 오케스트레이터다.',
 									'사용자의 시간, 총 예산, 위치, 날씨, 동행 상황, 온보딩 프로필, 후보 API 결과를 종합해 실행 가능한 추천 카드 3개를 만든다.',
 									'시간과 예산은 다시 묻지 않는다.',
+									'현재 세션의 customTime, dynamicAnswers, location은 온보딩보다 나중에 말한 조건이다. 온보딩 취향과 충돌하면 현재 세션 조건을 우선한다.',
 									'MBTI는 추천 톤과 활동 성향 보정에만 사용하고 시간, 예산, 안전 조건보다 우선하지 않는다.',
 									'profile.onboardingFreeformAnswers는 사용자가 온보딩에서 말이나 문장으로 답한 원문 Q/A다. 선택지보다 구체적인 취향 신호로 보고 추천 후보, 이유, 배지에 반영한다.',
 									'아기 동반이면 부모 취향보다 아기 안전, 유모차/수유실/기저귀 교체/주차, 짧은 동선을 먼저 본다.',
 									'후보 API 결과는 실행 링크와 검증 신호로 우선 사용한다. MyRealTrip 상품/옵션, API Fuse의 KakaoMap/NaverMap 장소와 경로, CatchTable 검색/예약가능성, Yogiyo 음식 후보, AirKorea 대기질, Modu Parking 주차 후보, Swing 이동 후보를 가능한 한 반영한다.',
+									'현재 요청에 해외, 아주 멀리, 장거리, 비행기, 항공, 공항 또는 해외 도시가 있으면 candidates.flights를 반드시 검토하고, 후보가 있으면 최소 한 카드에는 flight 아이템을 포함한다.',
 									'예약 URL은 후보에 있는 outboundUrl 또는 reservationUrl만 사용하고 새 URL을 지어내지 않는다.',
 									'routeSummary에는 후보 mobility가 있으면 이동수단과 예상 시간을 포함한다.',
 									'각 후보의 travelMinutes, travelTimeText를 보고 사용 가능 시간 안에서 이동 부담이 낮은 후보를 우선한다.',
 									'사용 가능 시간이 짧으면 이동시간이 긴 후보를 쓰지 말고, 총 코스 시간에 이동시간을 반드시 포함한다.',
+									'사용 가능한 시간은 비워두지 말고 이동시간과 장소 체류시간을 포함해 약 80-95%를 쓰는 계획을 만든다.',
+									'각 아이템에는 가능한 경우 dwellMinutes와 dwellTimeText로 그 장소에서 머무는 시간을 예측한다. 항공편은 비행시간을 dwellMinutes로 본다.',
 									'각 후보의 operatingStatus, arrivalTimeText, availabilityText를 보고 도착 예정 시간에 운영 중일 가능성을 우선한다.',
 									'operatingStatus가 closed_at_arrival인 후보는 다른 대안이 없을 때만 쓰고, 가능하면 open_at_arrival 후보를 먼저 선택한다.',
 									'operatingStatus가 unknown이면 운영 확인 필요를 배지나 이유에 표시한다.',
@@ -240,6 +279,11 @@ async function requestOpenAICards(input: {
 							{
 								type: 'input_text',
 								text: JSON.stringify({
+									requestContext: {
+										currentRequestText: sessionRequestText(input.session),
+										availableMinutes: availableSessionMinutes(input.session),
+										flightIntent: hasFlightIntent(input.session)
+									},
 									profile: input.profile,
 									session: input.session,
 									candidates: input.candidates,
@@ -278,14 +322,17 @@ async function requestOpenAICards(input: {
 		throw new Error('OpenAI response did not include exactly 3 recommendations');
 	}
 
-	return applySessionGuards(
-		applyOperatingStatusGuards(
-			applyTravelTimeGuards(
-				cards.map((card, index) =>
-					normalizeCard(card, input.fallbackCards[index], input.sessionId)
-				),
-				input.session
-			)
+	return applyTimeUtilization(
+		applySessionGuards(
+			applyOperatingStatusGuards(
+				applyTravelTimeGuards(
+					cards.map((card, index) =>
+						normalizeCard(card, input.fallbackCards[index], input.sessionId)
+					),
+					input.session
+				)
+			),
+			input.session
 		),
 		input.session
 	);
@@ -298,12 +345,17 @@ function scopeCardsToSession(cards: RecommendationCard[], sessionId: string) {
 	}));
 }
 
-function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBundle) {
+function applyCandidateBundle(
+	cards: RecommendationCard[],
+	bundle: CandidateBundle,
+	session: RecommendationSession
+) {
 	return cards.map((card, index) => {
 		const activity = bundle.activities[index % Math.max(bundle.activities.length, 1)];
 		const restaurant = bundle.restaurants[index % Math.max(bundle.restaurants.length, 1)];
 		const mobility = bundle.mobility[index % Math.max(bundle.mobility.length, 1)];
-		const items = card.items.map((item) => {
+		const flight = bundle.flights[index % Math.max(bundle.flights.length, 1)];
+		const mappedItems = card.items.map((item) => {
 			if (item.slot === 'activity' && activity) {
 				return {
 					...item,
@@ -355,32 +407,129 @@ function applyCandidateBundle(cards: RecommendationCard[], bundle: CandidateBund
 
 			return item;
 		});
-		const externalTags = [...(activity?.tags ?? []), ...(restaurant?.tags ?? [])].slice(0, 2);
+		const items = flight ? mergeFlightItem(mappedItems, flight) : mappedItems;
+		const externalTags = [
+			...(flight?.tags ?? []),
+			...(activity?.tags ?? []),
+			...(restaurant?.tags ?? [])
+		].slice(0, 4);
 		const trendTag = bundle.trendKeywords[index];
 		const badges = [
-			...new Set([...card.badges, ...externalTags, ...(trendTag ? [trendTag] : [])])
+			...new Set([
+				...(flight ? ['항공편 포함', '이번 요청 우선'] : []),
+				...card.badges,
+				...externalTags,
+				...(trendTag ? [trendTag] : [])
+			])
 		].slice(0, 8);
 		const reservationUrl =
-			items.find((item) => item.reservationUrl)?.reservationUrl ?? card.reservationUrl;
+			flight?.reservationUrl ??
+			flight?.outboundUrl ??
+			items.find((item) => item.reservationUrl)?.reservationUrl ??
+			card.reservationUrl;
 		const routeMapUrl =
-			mobility?.routeMapUrl ??
+			flight?.outboundUrl ??
+			(flight ? undefined : mobility?.routeMapUrl) ??
 			items.find((item) => item.routeMapUrl)?.routeMapUrl ??
 			items.find((item) => item.mapUrl)?.mapUrl ??
 			card.routeMapUrl;
+		const estimatedCost = flight?.price
+			? Math.max(card.estimatedCost, flight.price)
+			: card.estimatedCost;
+		const people = partyCount(session.situation);
 
 		return {
 			...card,
+			label: flight ? '항공 포함' : card.label,
+			title: flight ? `${flightDestinationLabel(flight)} 항공편까지 보는 코스` : card.title,
+			reason: flight
+				? `${card.reason} 이번에 말한 장거리/해외 이동 의도를 온보딩 취향보다 우선해서 항공편을 포함했어.`
+				: card.reason,
+			estimatedCost,
+			budgetText: flight?.price
+				? `${flightDestinationLabel(flight)} 항공권 기준 ${formatKrw(flight.price)}부터 확인`
+				: card.budgetText,
+			perPersonText: `1인당 약 ${formatKrw(Math.ceil(estimatedCost / people / 1000) * 1000)}`,
 			items,
 			badges,
 			weatherFit: bundle.weather.preferIndoor ? 'indoor' : card.weatherFit,
-			routeSummary: mobility?.label ?? card.routeSummary,
-			routeTransport: mobility?.mode ?? card.routeTransport,
+			routeSummary: flight ? flightRouteSummary(flight) : (mobility?.label ?? card.routeSummary),
+			routeTransport: flight ? ('flight' as const) : (mobility?.mode ?? card.routeTransport),
 			routeMapUrl,
-			routeDetail: mobility?.detail ?? card.routeDetail,
+			routeDetail: flight ? flightRouteDetail(flight) : (mobility?.detail ?? card.routeDetail),
 			reservationUrl,
 			outboundUrl: reservationUrl ?? routeMapUrl ?? card.outboundUrl
 		};
 	});
+}
+
+function mergeFlightItem(items: RecommendationItem[], flight: FlightCandidate) {
+	const index = items.findIndex((item) => item.slot === 'flight');
+	const flightItem = flightCandidateToItem(flight, index >= 0 ? items[index] : undefined);
+	if (index >= 0) {
+		return items.map((item, itemIndex) => (itemIndex === index ? flightItem : item));
+	}
+	return [flightItem, ...items];
+}
+
+function flightCandidateToItem(
+	flight: FlightCandidate,
+	fallback?: RecommendationItem
+): RecommendationItem {
+	return {
+		slot: 'flight',
+		title: flight.title,
+		price: flight.price ?? fallback?.price ?? 0,
+		source: flight.source,
+		outboundUrl: flight.outboundUrl ?? fallback?.outboundUrl ?? 'https://flight.naver.com',
+		reservationUrl: flight.reservationUrl ?? flight.outboundUrl ?? fallback?.reservationUrl,
+		availabilityText: [
+			flight.airlineText,
+			flight.departureTimeText,
+			flight.returnDate ? `${flight.returnDate} 복귀` : undefined,
+			flight.tags.slice(0, 2).join(' · ')
+		]
+			.filter(Boolean)
+			.join(' · '),
+		arrivalTimeText: flight.arrivalTimeText,
+		travelTimeText: flight.durationText,
+		dwellMinutes: flight.durationMinutes,
+		dwellTimeText: flight.durationText ?? fallback?.dwellTimeText,
+		thumbnailUrl: fallback?.thumbnailUrl
+	};
+}
+
+function flightDestinationLabel(flight: FlightCandidate) {
+	const airports: Record<string, string> = {
+		KIX: '오사카',
+		FUK: '후쿠오카',
+		NRT: '도쿄',
+		HND: '도쿄',
+		TPE: '타이베이',
+		BKK: '방콕',
+		SIN: '싱가포르',
+		DAD: '다낭',
+		HKG: '홍콩'
+	};
+	return airports[flight.arrivalAirport] ?? flight.arrivalAirport;
+}
+
+function flightRouteSummary(flight: FlightCandidate) {
+	return [`${flight.departureAirport} → ${flight.arrivalAirport} 항공`, flight.durationText]
+		.filter(Boolean)
+		.join(' · ');
+}
+
+function flightRouteDetail(flight: FlightCandidate) {
+	return [
+		flight.departureTimeText,
+		flight.arrivalTimeText,
+		flight.durationText,
+		flight.airlineText,
+		flight.returnDate ? `${flight.returnDate} 복귀` : undefined
+	]
+		.filter(Boolean)
+		.join(' · ');
 }
 
 function applyTravelTimeGuards(cards: RecommendationCard[], session: RecommendationSession) {
@@ -499,6 +648,7 @@ function operatingStatusBadges(items: RecommendationItem[], removedClosedCount: 
 }
 
 function applySessionGuards(cards: RecommendationCard[], session: RecommendationSession) {
+	if (hasFlightIntent(session)) return cards;
 	const singleActivityWindow = isSingleActivityWindow(session);
 	const longActivityBlocked = blocksLongActivity(session);
 	if (!singleActivityWindow && !longActivityBlocked) return cards;
@@ -781,7 +931,9 @@ function mergeItemExecutionData(items: RecommendationItem[], fallbackItems: Reco
 			operatingStatus: item.operatingStatus ?? fallback.operatingStatus,
 			arrivalTimeText: item.arrivalTimeText ?? fallback.arrivalTimeText,
 			openingHoursText: item.openingHoursText ?? fallback.openingHoursText,
-			thumbnailUrl: item.thumbnailUrl ?? fallback.thumbnailUrl
+			thumbnailUrl: item.thumbnailUrl ?? fallback.thumbnailUrl,
+			dwellMinutes: item.dwellMinutes ?? fallback.dwellMinutes,
+			dwellTimeText: item.dwellTimeText ?? fallback.dwellTimeText
 		};
 	});
 }
@@ -804,11 +956,30 @@ function recommendationSchema() {
 		additionalProperties: false,
 		required: ['slot', 'title', 'price', 'source', 'outboundUrl'],
 		properties: {
-			slot: { type: 'string', enum: ['activity', 'food', 'move', 'fallback'] },
+			slot: { type: 'string', enum: ['activity', 'food', 'move', 'flight', 'fallback'] },
 			title: { type: 'string' },
 			price: { type: 'integer', minimum: 0 },
 			source: { type: 'string', enum: ['myrealtrip', 'api_fuse', 'genrank', 'sai'] },
-			outboundUrl: { type: 'string' }
+			outboundUrl: { type: 'string' },
+			reservationUrl: { type: 'string' },
+			mapUrl: { type: 'string' },
+			address: { type: 'string' },
+			lat: { type: 'number' },
+			lng: { type: 'number' },
+			availabilityText: { type: 'string' },
+			travelMinutes: { type: 'integer', minimum: 0 },
+			travelTimeText: { type: 'string' },
+			travelDistanceMeters: { type: 'integer', minimum: 0 },
+			routeMapUrl: { type: 'string' },
+			operatingStatus: {
+				type: 'string',
+				enum: ['open_at_arrival', 'closed_at_arrival', 'unknown']
+			},
+			arrivalTimeText: { type: 'string' },
+			openingHoursText: { type: 'string' },
+			thumbnailUrl: { type: 'string' },
+			dwellMinutes: { type: 'integer', minimum: 0 },
+			dwellTimeText: { type: 'string' }
 		}
 	};
 
@@ -859,7 +1030,16 @@ function recommendationSchema() {
 				type: 'array',
 				items: itemSchema
 			},
-			outboundUrl: { type: 'string' }
+			outboundUrl: { type: 'string' },
+			routeTransport: {
+				type: 'string',
+				enum: ['walk', 'transit', 'car', 'taxi', 'shared', 'flight']
+			},
+			routeMapUrl: { type: 'string' },
+			routeDetail: { type: 'string' },
+			reservationUrl: { type: 'string' },
+			calendarUrl: { type: 'string' },
+			timeUsageText: { type: 'string' }
 		}
 	};
 

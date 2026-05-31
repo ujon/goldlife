@@ -1,6 +1,11 @@
 import { env } from '$env/dynamic/private';
 import type { CandidateBundle, CandidateQueryPlan } from '$lib/sai/candidates';
-import { situationLabel, timeMeta } from '$lib/sai/recommendations';
+import {
+	hasFlightIntent,
+	sessionRequestText,
+	situationLabel,
+	timeMeta
+} from '$lib/sai/recommendations';
 import type { RecommendationHistoryItem, RecommendationSession, UserProfile } from '$lib/sai/types';
 import { loggedFetch } from './integration-logger';
 
@@ -43,8 +48,10 @@ export function fallbackCandidateQueryPlan(
 	const location = session.location?.label ?? profile.recentLocation?.label ?? '서울';
 	const singleActivityWindow = isSingleActivityWindow(session);
 	const longActivityBlocked = blocksLongActivity(session);
-	const preferenceText = onboardingPreferenceText(profile);
+	const currentRequestText = sessionRequestText(session);
+	const preferenceText = currentRequestText || onboardingPreferenceText(profile);
 	const campingPreference = /캠핑|글램핑|야영|camp/i.test(preferenceText);
+	const flightIntent = hasFlightIntent(session);
 	const culturePreference = profile.activityPreferences.includes('culture');
 	const baby = session.companionConstraints.hasBaby;
 	const activityQueries = longActivityBlocked
@@ -63,9 +70,11 @@ export function fallbackCandidateQueryPlan(
 
 	return {
 		source: 'fallback',
-		preferenceSummary: longActivityBlocked
-			? '사용 가능 시간이 짧아 글램핑/캠핑장/숙박형 후보는 제외하고 근거리 카페, 전시, 짧은 체험만 조회한다.'
-			: '온보딩 취향과 최근 히스토리를 반영해 활동, 맛집, 이동 후보를 조회한다.',
+		preferenceSummary: flightIntent
+			? '이번 추천 요청에서 장거리/해외 이동 의도가 감지되어 온보딩 취향보다 현재 입력을 우선하고 항공편 후보를 함께 조회한다.'
+			: longActivityBlocked
+				? '사용 가능 시간이 짧아 글램핑/캠핑장/숙박형 후보는 제외하고 근거리 카페, 전시, 짧은 체험만 조회한다.'
+				: '온보딩 취향과 최근 히스토리를 반영해 활동, 맛집, 이동 후보를 조회한다.',
 		activityQueries,
 		restaurantQueries,
 		myrealtripKeywords,
@@ -88,7 +97,8 @@ export function fallbackCandidateQueryPlan(
 				operation: 'tna.search',
 				values: { keyword },
 				purpose: '예약 링크가 있는 액티비티 후보 검색'
-			}))
+			})),
+			...flightOperations(session)
 		]
 	};
 }
@@ -124,8 +134,10 @@ async function tryExaoneCandidatePlan(
 								'JSON만 출력한다. 설명, 마크다운, 사고 과정은 절대 출력하지 않는다.',
 								'너는 사이(SAI)의 API 조회 계획 담당자다.',
 								'현재 세션의 시간, 예산, 위치, 동행, 방금 수집한 API 후보, DB 추천 히스토리를 함께 보고 어떤 API에 어떤 값을 조회할지 JSON으로만 답한다.',
+								'현재 세션의 customTime, dynamicAnswers, location은 온보딩 답변보다 최신 입력이다. 서로 충돌하면 현재 세션 입력을 우선한다.',
 								'시간 제약은 hard constraint다. 1-3시간 또는 240분 이하 세션이면 글램핑, 캠핑장, 캠핑, 야영, 카라반, 숙박, 당일치기, 등산, 트레킹 같은 긴 활동은 조회값과 표시 후보에서 제외한다.',
 								'취향 신호는 조회어에 반영하되 시간 제약을 어기지 않는다. 예를 들어 캠핑 취향 + 2시간이면 글램핑이 아니라 근거리 바비큐 카페, 전시, 짧은 체험 쪽으로 바꾼다.',
+								'현재 요청에 해외, 아주 멀리, 장거리, 비행기, 항공, 공항, 도시명이 포함되면 API Fuse naver-flight 조회를 operations에 포함한다.',
 								'activityQueries는 카카오맵/네이버맵 장소 검색어, restaurantQueries는 캐치테이블/요기요 검색어, myrealtripKeywords는 마이리얼트립 검색어다.',
 								'operations에는 실제 호출할 provider, operation, values, purpose를 적는다.',
 								'반드시 JSON object만 출력한다.'
@@ -215,6 +227,11 @@ function normalizeCandidatePlan(
 				})
 				.slice(0, 8)
 		: fallback.operations;
+	const requiredFlightOperations = hasFlightIntent(session) ? flightOperations(session) : [];
+	const mergedOperations = uniqueOperations([...operations, ...requiredFlightOperations]).slice(
+		0,
+		10
+	);
 
 	return {
 		source: 'exaone',
@@ -228,7 +245,7 @@ function normalizeCandidatePlan(
 			? myrealtripKeywords
 			: fallback.myrealtripKeywords,
 		excludedKeywords,
-		operations: operations.length ? operations : fallback.operations
+		operations: mergedOperations.length ? mergedOperations : fallback.operations
 	};
 }
 
@@ -291,6 +308,48 @@ function onboardingPreferenceText(profile: UserProfile) {
 	return (profile.onboardingFreeformAnswers ?? []).map((answer) => answer.answer).join(' ');
 }
 
+function flightOperations(session: RecommendationSession): CandidateQueryPlan['operations'] {
+	if (!hasFlightIntent(session)) return [];
+	const text = sessionRequestText(session);
+	const destination = flightDestinationForText(text);
+	const roundTrip = session.availableTime === 'day' || session.availableTime === 'weekend';
+	return [
+		{
+			provider: 'api_fuse',
+			operation: roundTrip ? 'naver_flight.search_flights' : 'naver_flight.search_oneway_flights',
+			values: {
+				departureHint: session.location?.label ?? '서울',
+				arrivalHint: destination,
+				maxResults: 5
+			},
+			purpose: '장거리 또는 해외 이동 요청에 맞는 항공편 후보 검색'
+		}
+	];
+}
+
+function flightDestinationForText(text: string) {
+	const normalized = text.replace(/\s/g, '');
+	if (/오사카|간사이/i.test(normalized)) return '오사카';
+	if (/후쿠오카/i.test(normalized)) return '후쿠오카';
+	if (/도쿄|일본/i.test(normalized)) return '도쿄';
+	if (/대만|타이베이/i.test(normalized)) return '타이베이';
+	if (/방콕|태국/i.test(normalized)) return '방콕';
+	if (/싱가포르/i.test(normalized)) return '싱가포르';
+	if (/베트남|다낭/i.test(normalized)) return '다낭';
+	if (/홍콩/i.test(normalized)) return '홍콩';
+	return '가까운 해외 도시';
+}
+
+function uniqueOperations(operations: CandidateQueryPlan['operations']) {
+	const seen = new Set<string>();
+	return operations.filter((operation) => {
+		const key = `${operation.provider}-${operation.operation}-${JSON.stringify(operation.values)}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
 function isSingleActivityWindow(session: RecommendationSession) {
 	if (session.availableTime === 'one_hour') return true;
 	const start = parseDate(session.startDateTime);
@@ -331,6 +390,8 @@ function summarizeSession(session: RecommendationSession) {
 		situationLabel: situationLabel(session.situation),
 		availableTime: session.availableTime,
 		timeLabel: timeMeta(session.availableTime).label,
+		currentRequestText: sessionRequestText(session),
+		flightIntent: hasFlightIntent(session),
 		startDateTime: session.startDateTime,
 		endDateTime: session.endDateTime,
 		budgetTotal: session.budgetTotal,
@@ -393,6 +454,21 @@ function summarizeCandidates(candidates: CandidateBundle) {
 			operatingStatus: candidate.operatingStatus,
 			arrivalTimeText: candidate.arrivalTimeText,
 			openingHoursText: candidate.openingHoursText
+		})),
+		flights: candidates.flights.slice(0, 5).map((candidate) => ({
+			title: candidate.title,
+			price: candidate.price,
+			source: candidate.source,
+			departureAirport: candidate.departureAirport,
+			arrivalAirport: candidate.arrivalAirport,
+			departureDate: candidate.departureDate,
+			returnDate: candidate.returnDate,
+			departureTimeText: candidate.departureTimeText,
+			arrivalTimeText: candidate.arrivalTimeText,
+			durationMinutes: candidate.durationMinutes,
+			durationText: candidate.durationText,
+			airlineText: candidate.airlineText,
+			tags: candidate.tags
 		})),
 		mobility: candidates.mobility
 	};

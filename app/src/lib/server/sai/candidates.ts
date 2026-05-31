@@ -3,13 +3,19 @@ import type {
 	ActivityCandidate,
 	CandidateBundle,
 	CandidateQueryPlan,
+	FlightCandidate,
 	MobilityCandidate,
 	OperatingStatus,
 	ProviderStatus,
 	RestaurantCandidate,
 	WeatherCandidate
 } from '$lib/sai/candidates';
-import { partyCount } from '$lib/sai/recommendations';
+import {
+	availableSessionMinutes,
+	hasFlightIntent,
+	partyCount,
+	sessionRequestText
+} from '$lib/sai/recommendations';
 import type { RecommendationSession, UserProfile } from '$lib/sai/types';
 import { loggedFetch, logIntegrationEvent } from './integration-logger';
 
@@ -60,12 +66,14 @@ const remoteShortWindowPattern =
 
 export async function collectCandidates(input: CandidateInput): Promise<CandidateBundle> {
 	const statuses: ProviderStatus[] = [];
-	const [trendResult, activityResult, restaurantResult, weatherResult] = await Promise.all([
-		getTrendKeywords(statuses),
-		getActivities(input, statuses),
-		getRestaurants(input, statuses),
-		getWeather(input)
-	]);
+	const [trendResult, activityResult, restaurantResult, weatherResult, flightResult] =
+		await Promise.all([
+			getTrendKeywords(statuses),
+			getActivities(input, statuses),
+			getRestaurants(input, statuses),
+			getWeather(input),
+			getFlights(input, statuses)
+		]);
 	const mobilityResult = await getMobility(
 		input,
 		statuses,
@@ -77,6 +85,7 @@ export async function collectCandidates(input: CandidateInput): Promise<Candidat
 		trendKeywords: trendResult,
 		activities: activityResult,
 		restaurants: restaurantResult,
+		flights: flightResult,
 		mobility: mobilityResult,
 		statuses,
 		queryPlan: input.queryPlan
@@ -271,6 +280,152 @@ async function getRestaurants(input: CandidateInput, statuses: ProviderStatus[])
 	});
 
 	return arrivalSafeRestaurants.length ? arrivalSafeRestaurants : fallback;
+}
+
+async function getFlights(
+	input: CandidateInput,
+	statuses: ProviderStatus[]
+): Promise<FlightCandidate[]> {
+	if (!hasFlightIntent(input.session)) return [];
+
+	const apiKey = env.API_FUSE_API_KEY;
+	const fallback = fallbackFlightCandidates(input);
+	if (!apiKey) {
+		statuses.push({
+			provider: 'api_fuse',
+			configured: false,
+			ok: false,
+			fallbackReason: 'API_FUSE_API_KEY is not configured for naver-flight'
+		});
+		return fallback;
+	}
+
+	const plans = flightSearchPlans(input).slice(0, 2);
+	const results = await Promise.allSettled(plans.map((plan) => searchFlights(input, apiKey, plan)));
+	const flights = dedupeFlights(
+		results.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+	).slice(0, 3);
+
+	statuses.push({
+		provider: 'api_fuse',
+		configured: true,
+		ok: flights.length > 0,
+		fallbackReason: flights.length ? undefined : 'Naver Flight returned no candidates'
+	});
+
+	return flights.length ? flights : fallback;
+}
+
+type FlightSearchPlan = {
+	departure: string;
+	arrival: string;
+	departureDate: string;
+	returnDate?: string;
+	destinationLabel: string;
+};
+
+async function searchFlights(
+	input: CandidateInput,
+	apiKey: string,
+	plan: FlightSearchPlan
+): Promise<FlightCandidate[]> {
+	const roundTrip = Boolean(plan.returnDate);
+	const response = await loggedFetch({
+		provider: 'api_fuse',
+		kind: 'api',
+		operation: roundTrip ? 'naver_flight.search_flights' : 'naver_flight.search_oneway',
+		url: `${APIFUSE_BASE}/v1/naver-flight/${roundTrip ? 'search-flights' : 'search-oneway-flights'}`,
+		init: {
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${apiKey}`,
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify({
+				departure: plan.departure,
+				arrival: plan.arrival,
+				departureDate: plan.departureDate,
+				airlines: [],
+				maxResults: 5,
+				...(plan.returnDate ? { returnDate: plan.returnDate } : {})
+			}),
+			signal: AbortSignal.timeout(12000)
+		}
+	});
+	if (!response.ok) throw new Error(`Naver Flight ${response.status}`);
+
+	const payload = (await response.json()) as { data?: Record<string, unknown> };
+	const data = payload.data ?? {};
+	const rows = Array.isArray(data.flights) ? (data.flights as Record<string, unknown>[]) : [];
+	return rows.map((row, index) => flightRowToCandidate(input, row, plan, index));
+}
+
+function flightRowToCandidate(
+	input: CandidateInput,
+	row: Record<string, unknown>,
+	plan: FlightSearchPlan,
+	index: number
+): FlightCandidate {
+	const outbound = objectValue(row.outbound);
+	const inbound = objectValue(row.inbound);
+	const fare = objectValue(row.fare);
+	const flightNumber = stringValue(outbound.flight) || `flight-${index + 1}`;
+	const airlineText = stringValue(outbound.airlineName) || stringValue(outbound.airlineCode);
+	const departureTime = stringValue(outbound.depTime);
+	const arrivalTime = stringValue(outbound.arrTime);
+	const outboundMinutes = numberValue(outbound.durationMin) ?? 0;
+	const inboundMinutes = numberValue(inbound.durationMin) ?? 0;
+	const durationMinutes = outboundMinutes + inboundMinutes || outboundMinutes || undefined;
+	const price =
+		numberValue(fare.bestCardFare) ??
+		numberValue(fare.generalFare) ??
+		numberValue(fare.promotionFare);
+	const curationTags = Array.isArray(row.curationTags)
+		? row.curationTags.filter((tag): tag is string => typeof tag === 'string')
+		: [];
+	const title = `${plan.departure}→${plan.arrival} ${plan.destinationLabel} 항공편`;
+
+	return {
+		id: `flight-${plan.departure}-${plan.arrival}-${flightNumber}-${index}`,
+		title,
+		price,
+		source: 'api_fuse',
+		outboundUrl: naverFlightUrl(plan),
+		reservationUrl: naverFlightUrl(plan),
+		departureAirport: plan.departure,
+		arrivalAirport: plan.arrival,
+		departureDate: plan.departureDate,
+		returnDate: plan.returnDate,
+		departureTimeText: departureTime ? `${plan.departureDate} ${departureTime} 출발` : undefined,
+		arrivalTimeText: arrivalTime ? `${arrivalTime} 도착` : undefined,
+		durationMinutes,
+		durationText: durationMinutes ? `비행 약 ${formatFlightDuration(durationMinutes)}` : undefined,
+		airlineText: airlineText || undefined,
+		tags: [
+			'항공편',
+			'네이버항공',
+			...(plan.returnDate ? ['왕복'] : ['편도']),
+			...curationTags,
+			...timeFitFlightTags(input)
+		]
+	};
+}
+
+function fallbackFlightCandidates(input: CandidateInput): FlightCandidate[] {
+	return flightSearchPlans(input)
+		.slice(0, 2)
+		.map((plan, index) => ({
+			id: `fallback-flight-${plan.arrival}-${index}`,
+			title: `${plan.departure}→${plan.arrival} ${plan.destinationLabel} 항공편 확인`,
+			source: 'sai' as const,
+			outboundUrl: naverFlightUrl(plan),
+			reservationUrl: naverFlightUrl(plan),
+			departureAirport: plan.departure,
+			arrivalAirport: plan.arrival,
+			departureDate: plan.departureDate,
+			returnDate: plan.returnDate,
+			tags: ['항공편', '검색 링크', ...timeFitFlightTags(input)]
+		}));
 }
 
 async function getCatchtableRestaurants(input: CandidateInput, apiKey: string) {
@@ -1220,6 +1375,10 @@ function stringValue(value: unknown) {
 	return typeof value === 'string' ? value : '';
 }
 
+function objectValue(value: unknown): Record<string, unknown> {
+	return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
 function numberValue(value: unknown) {
 	if (typeof value === 'string' && value.trim()) {
 		const parsed = Number(value.trim());
@@ -1881,6 +2040,28 @@ function dedupeRestaurants(candidates: RestaurantCandidate[]) {
 	});
 }
 
+function dedupeFlights(candidates: FlightCandidate[]) {
+	const seen = new Set<string>();
+	return candidates.filter((candidate) => {
+		const key = [
+			candidate.departureAirport,
+			candidate.arrivalAirport,
+			candidate.departureDate,
+			candidate.returnDate,
+			candidate.departureTimeText,
+			candidate.airlineText,
+			candidate.price
+		]
+			.filter(Boolean)
+			.join('-')
+			.replace(/\s/g, '')
+			.toLowerCase();
+		if (!key || seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
 function airKoreaStationName(locationLabel?: string) {
 	if (!locationLabel) return '';
 	const stationMatch = locationLabel.match(
@@ -1924,6 +2105,99 @@ function myrealtripSearchKeywords(input: CandidateInput) {
 	];
 }
 
+function flightSearchPlans(input: CandidateInput): FlightSearchPlan[] {
+	const requestText = sessionRequestText(input.session);
+	const departure = departureAirportForLocation(
+		input.session.location?.label ?? input.profile.recentLocation?.label ?? ''
+	);
+	const destinations = flightDestinationsForText(requestText);
+	const departureDate = flightDepartureDate(input.session);
+	const returnDate = flightReturnDate(input.session, departureDate);
+
+	return destinations.map((destination) => ({
+		departure,
+		arrival: destination.airport,
+		destinationLabel: destination.label,
+		departureDate,
+		returnDate
+	}));
+}
+
+function departureAirportForLocation(location: string) {
+	if (/부산|김해|경남|울산/.test(location)) return 'PUS';
+	if (/제주/.test(location)) return 'CJU';
+	if (/김포/.test(location)) return 'GMP';
+	return 'ICN';
+}
+
+function flightDestinationsForText(text: string) {
+	const normalized = text.replace(/\s/g, '');
+	if (/오사카|간사이|kix/i.test(normalized)) return [{ airport: 'KIX', label: '오사카' }];
+	if (/후쿠오카|fuk/i.test(normalized)) return [{ airport: 'FUK', label: '후쿠오카' }];
+	if (/도쿄|나리타|일본|nrt/i.test(normalized)) return [{ airport: 'NRT', label: '도쿄' }];
+	if (/대만|타이베이|타오위안|tpe/i.test(normalized))
+		return [{ airport: 'TPE', label: '타이베이' }];
+	if (/방콕|태국|bkk/i.test(normalized)) return [{ airport: 'BKK', label: '방콕' }];
+	if (/싱가포르|sin/i.test(normalized)) return [{ airport: 'SIN', label: '싱가포르' }];
+	if (/베트남|다낭|danang|dad/i.test(normalized)) return [{ airport: 'DAD', label: '다낭' }];
+	if (/홍콩|hkg/i.test(normalized)) return [{ airport: 'HKG', label: '홍콩' }];
+	return [
+		{ airport: 'FUK', label: '후쿠오카' },
+		{ airport: 'NRT', label: '도쿄' }
+	];
+}
+
+function flightDepartureDate(session: RecommendationSession) {
+	const start = session.startDateTime ? new Date(session.startDateTime) : tomorrow();
+	const source = Number.isNaN(start.getTime()) || start.getTime() < Date.now() ? tomorrow() : start;
+	return selectedDateForDate(source);
+}
+
+function flightReturnDate(session: RecommendationSession, departureDate: string) {
+	const start = dateFromYmd(departureDate);
+	const end = session.endDateTime ? new Date(session.endDateTime) : null;
+	if (
+		end &&
+		!Number.isNaN(end.getTime()) &&
+		end.getTime() - start.getTime() >= 18 * 60 * 60 * 1000
+	) {
+		return selectedDateForDate(end);
+	}
+	if (session.availableTime === 'weekend') return selectedDateForDate(addDays(start, 2));
+	if (session.availableTime === 'day') return selectedDateForDate(addDays(start, 1));
+	return undefined;
+}
+
+function tomorrow() {
+	return addDays(new Date(), 1);
+}
+
+function addDays(source: Date, days: number) {
+	const next = new Date(source);
+	next.setDate(next.getDate() + days);
+	return next;
+}
+
+function dateFromYmd(value: string) {
+	const [year, month, day] = value.split('-').map(Number);
+	return new Date(year, (month ?? 1) - 1, day ?? 1, 9, 0, 0);
+}
+
+function formatFlightDuration(minutes: number) {
+	const hours = Math.floor(minutes / 60);
+	const rest = minutes % 60;
+	if (!hours) return `${rest}분`;
+	if (!rest) return `${hours}시간`;
+	return `${hours}시간 ${rest}분`;
+}
+
+function timeFitFlightTags(input: CandidateInput) {
+	const availableMinutes = availableSessionMinutes(input.session);
+	if (!availableMinutes) return ['장거리 요청 반영'];
+	if (availableMinutes >= 420) return ['사용 시간 크게 활용'];
+	return ['시간 확인 필요'];
+}
+
 function firstGeoCandidate(candidates: GeoCandidate[]) {
 	return candidates.find((candidate) => candidate.lat != null && candidate.lng != null);
 }
@@ -1955,6 +2229,11 @@ function yogiyoSearchUrl(location?: string) {
 	return `https://www.yogiyo.co.kr/mobile/#/?search=${encodeURIComponent(query)}`;
 }
 
+function naverFlightUrl(plan: FlightSearchPlan) {
+	const query = `${plan.departure} ${plan.arrival} ${plan.departureDate} 항공권`;
+	return `https://flight.naver.com/flights/international/${plan.departure}-${plan.arrival}-${plan.departureDate}${plan.returnDate ? `/${plan.arrival}-${plan.departure}-${plan.returnDate}` : ''}?adult=1&fareType=Y&query=${encodeURIComponent(query)}`;
+}
+
 function routeMapUrl(_origin: RecommendationSession['location'], destination?: GeoCandidate) {
 	if (!destination) return 'https://map.kakao.com';
 	if (destination.lat != null && destination.lng != null) {
@@ -1972,6 +2251,7 @@ function transportLabel(mode: NonNullable<MobilityCandidate['mode']>) {
 	if (mode === 'car') return '자동차';
 	if (mode === 'taxi') return '택시';
 	if (mode === 'shared') return '공유 모빌리티';
+	if (mode === 'flight') return '항공';
 	return '대중교통';
 }
 
@@ -2103,7 +2383,11 @@ function blocksLongActivity(session: RecommendationSession) {
 }
 
 function freeformActivityKeyword(profile: UserProfile, session: RecommendationSession) {
-	const text = (profile.onboardingFreeformAnswers ?? []).map((answer) => answer.answer).join(' ');
+	const currentRequestText = sessionRequestText(session);
+	const text =
+		currentRequestText ||
+		(profile.onboardingFreeformAnswers ?? []).map((answer) => answer.answer).join(' ');
+	if (hasFlightIntent(session)) return '공항 항공편';
 	const rule = freeformKeywordRules.find((item) => item.pattern.test(text));
 	if (!rule) return undefined;
 	if (blocksLongActivity(session) && rule.shortActivity) return rule.shortActivity;
