@@ -11,7 +11,9 @@
 		normalizeCompanionRelations,
 		composeRecommendations,
 		createRecommendationSession,
+		dislikeReasons,
 		formatKrw,
+		likeReasons,
 		partyCountForSession,
 		primarySituationFromRelations,
 		timeMeta
@@ -19,6 +21,7 @@
 	import type {
 		AuthMode,
 		CompanionRelation,
+		FeedbackRecord,
 		FollowupQuestion,
 		LocationSuggestion,
 		LocationValue,
@@ -322,6 +325,10 @@
 	let dynamicFollowups = $state<FollowupQuestion[]>([]);
 	let followupSource = $state<'exaone' | 'openai' | 'fallback'>('fallback');
 	let recommendations = $state<RecommendationCard[]>([]);
+	let selectedRecommendationId = $state('');
+	let feedbackDraft = $state<Record<string, { sentiment?: 'like' | 'dislike'; reasons: string[] }>>(
+		{}
+	);
 	let externalSheet = $state<ExternalSheet | null>(null);
 	let candidateBundle = $state<CandidateBundle | null>(null);
 	let activeSessionId = $state('');
@@ -442,12 +449,15 @@
 		`${Math.min(100, Math.round((recommendationTotalCost / recommendationBudgetLimit) * 100))}%`
 	);
 	let recommendationBudgetOver = $derived(recommendationTotalCost > recommendationBudgetLimit);
+	let selectedRecommendation = $derived(
+		recommendations.find((card) => card.id === selectedRecommendationId) ?? null
+	);
 	let mascotState = $derived(
 		saiSpeaking
 			? 'talking'
 			: screen === 'generating'
 				? 'thinking'
-				: screen === 'results'
+				: screen === 'results' || screen === 'resultDetail'
 					? 'happy'
 					: 'idle'
 	);
@@ -697,6 +707,14 @@
 		return serverJson<{ saved: boolean }>('/api/recommendation/click', {
 			method: 'POST',
 			body: JSON.stringify({ userId: currentUserId, cardId })
+		});
+	}
+
+	async function syncServerFeedback(sessionId: string, feedback: FeedbackRecord[]) {
+		if (!currentUserId) return;
+		return serverJson<{ saved: boolean }>('/api/recommendation/feedback', {
+			method: 'POST',
+			body: JSON.stringify({ userId: currentUserId, sessionId, feedback })
 		});
 	}
 
@@ -1210,6 +1228,8 @@
 		dynamicFollowups = [];
 		followupSource = 'fallback';
 		recommendations = [];
+		selectedRecommendationId = '';
+		feedbackDraft = {};
 		candidateBundle = null;
 		activeSessionId = '';
 		speechTranscript = '';
@@ -1462,6 +1482,8 @@
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		const cards = scopeCardsToSession(composed.cards, session.id);
 		recommendations = cards;
+		selectedRecommendationId = '';
+		feedbackDraft = {};
 		activeSessionId = session.id;
 		saveHistory(cards);
 		screen = 'results';
@@ -1741,18 +1763,27 @@
 		session = jsonCopy(item.session);
 		recommendations = jsonCopy(item.cards);
 		activeSessionId = item.session.id;
+		selectedRecommendationId = '';
+		feedbackDraft = Object.fromEntries(
+			item.feedback.map((feedback) => [
+				feedback.cardId,
+				{ sentiment: feedback.sentiment, reasons: [...feedback.reasons] }
+			])
+		);
 		screen = 'results';
 	}
 
 	function openRecommendationDetail(cardId: string) {
 		const card = recommendations.find((item) => item.id === cardId);
 		if (!card) return;
-		openExternalSheet(
-			card.id,
-			card.title,
-			cardReservationUrl(card),
-			`${formatKrw(card.estimatedCost)} · 실제 예약 페이지로 이동해서 바로 예약할 수 있어.`
-		);
+		selectedRecommendationId = cardId;
+		recordClick(cardId);
+		screen = 'resultDetail';
+	}
+
+	function backToResults() {
+		externalSheet = null;
+		screen = 'results';
 	}
 
 	function externalProviderLabel(url: string) {
@@ -1795,6 +1826,58 @@
 			};
 		});
 		void syncServerClick(cardId);
+	}
+
+	function feedbackRecordsFromDraft() {
+		return Object.entries(feedbackDraft)
+			.filter(([, draft]) => draft.sentiment)
+			.map(([cardId, draft]) => ({
+				cardId,
+				sentiment: draft.sentiment as 'like' | 'dislike',
+				reasons: draft.reasons,
+				createdAt: new Date().toISOString()
+			}));
+	}
+
+	function syncFeedback() {
+		if (!activeSessionId) return;
+		const feedback = feedbackRecordsFromDraft();
+		histories = histories.map((item) => {
+			if (item.session.id !== activeSessionId) return item;
+			return {
+				...item,
+				feedback
+			};
+		});
+		void syncServerFeedback(activeSessionId, feedback);
+	}
+
+	function setFeedback(cardId: string, sentiment: 'like' | 'dislike') {
+		const current = feedbackDraft[cardId];
+		feedbackDraft = {
+			...feedbackDraft,
+			[cardId]: {
+				sentiment,
+				reasons: current?.sentiment === sentiment ? current.reasons : []
+			}
+		};
+		syncFeedback();
+	}
+
+	function toggleFeedbackReason(cardId: string, reason: string) {
+		const current = feedbackDraft[cardId];
+		if (!current?.sentiment) return;
+		const reasons = current.reasons.includes(reason)
+			? current.reasons.filter((item) => item !== reason)
+			: [...current.reasons, reason];
+		feedbackDraft = {
+			...feedbackDraft,
+			[cardId]: {
+				...current,
+				reasons
+			}
+		};
+		syncFeedback();
 	}
 
 	function goHome() {
@@ -2608,7 +2691,7 @@
 			};
 		}
 
-		const effectiveScreen = targetScreen;
+		const effectiveScreen = targetScreen === 'resultDetail' ? 'results' : targetScreen;
 		const flow: Screen[] = [
 			'time',
 			'situation',
@@ -2715,6 +2798,71 @@
 		return index % 3 === 0 ? '' : index % 3 === 1 ? 'b' : 'w';
 	}
 
+	function weatherFitLabel(card: RecommendationCard) {
+		if (card.weatherFit === 'indoor') return '실내 중심';
+		if (card.weatherFit === 'mostly_indoor') return '실내 위주';
+		if (card.weatherFit === 'outdoor') return '야외 가능';
+		return session.weatherSnapshot.preferIndoor ? '실내 권장' : '날씨 무난';
+	}
+
+	function transportModeLabel(mode: RecommendationCard['routeTransport']) {
+		if (mode === 'walk') return '도보';
+		if (mode === 'transit') return '대중교통';
+		if (mode === 'car') return '자동차';
+		if (mode === 'taxi') return '택시';
+		if (mode === 'shared') return '이동';
+		if (mode === 'flight') return '항공';
+		return '이동';
+	}
+
+	function compactItemMeta(item: RecommendationItem) {
+		const dwellText = item.dwellTimeText
+			? /^체류/.test(item.dwellTimeText)
+				? item.dwellTimeText
+				: `체류 ${item.dwellTimeText}`
+			: undefined;
+		return [
+			sourceLabel(item),
+			dwellText,
+			item.availabilityText,
+			item.openingHoursText,
+			item.address
+		]
+			.filter(Boolean)
+			.slice(0, 3)
+			.join(' · ');
+	}
+
+	function itemPriceLabel(item: RecommendationItem) {
+		return item.price > 0 ? formatKrw(item.price) : '무료';
+	}
+
+	function routeSegmentLabel(card: RecommendationCard, nextItem: RecommendationItem | undefined) {
+		const detail = nextItem?.travelTimeText ?? card.routeDetail ?? card.routeSummary;
+		return detail || '동선 확인';
+	}
+
+	function detailStats(card: RecommendationCard) {
+		const maxBudget = Math.max(session.budgetTotal || card.estimatedCost || 1, 1);
+		return [
+			{ key: 'duration', label: '시간', value: card.estimatedDuration },
+			{ key: 'usage', label: '시간 사용', value: card.timeUsageText ?? card.estimatedDuration },
+			{ key: 'weather', label: '날씨', value: weatherFitLabel(card) },
+			{ key: 'cost', label: '예상 비용', value: formatKrw(card.estimatedCost), amount: true },
+			{
+				key: 'person',
+				label: '1인당',
+				value: card.perPersonText.replace(/^1인당\s*약\s*/, ''),
+				amount: true
+			},
+			{ key: 'budget', label: '최대 예산', value: formatKrw(maxBudget), amount: true }
+		];
+	}
+
+	function detailBadgeList(card: RecommendationCard) {
+		return [...new Set([...card.badges, ...card.companionFit])].slice(0, 8);
+	}
+
 	function reservationUrlForItem(item: RecommendationItem) {
 		return (
 			safeExternalUrl(item.reservationUrl, item.title) ??
@@ -2781,6 +2929,112 @@
 		content="시간, 예산, 위치, 동행 상황을 반영해 오늘 할 일을 추천하는 SAI MVP"
 	/>
 </svelte:head>
+
+{#snippet recommendationDetail(card: RecommendationCard)}
+	{@const items = uniqueRecommendationItems(card)}
+	{@const feedback = feedbackDraft[card.id]}
+	<article class="rec recommendation-detail">
+		<div class="top">
+			<span class="lab">{card.label}</span>
+			<div class="ttl">{card.title}</div>
+			<div class="why">
+				<span class="k">왜 이걸 골랐냐면</span>
+				{card.reason}
+			</div>
+		</div>
+
+		<div class="plan">
+			{#each detailStats(card) as stat (stat.key)}
+				<div class="stat">
+					<span class="k">{stat.label}</span>
+					<span class={`v ${stat.amount ? 'amt' : ''}`}>{stat.value}</span>
+				</div>
+			{/each}
+		</div>
+
+		<div class="route">
+			{#each items as item, itemIndex (`${item.title}-${item.address ?? itemIndex}`)}
+				<div class="rrow rstop">
+					<div class="rrail"><span class={`rdot ${resultBadgeClass(itemIndex)}`}></span></div>
+					<div class="rmid">
+						{#if item.thumbnailUrl}
+							<img
+								class="rthumb"
+								src={item.thumbnailUrl}
+								alt={`${item.title} 사진`}
+								loading="lazy"
+							/>
+						{:else}
+							<div class={`rthumb tone-${(itemIndex % 4) + 1}`} aria-hidden="true">
+								{item.title.slice(0, 2)}
+							</div>
+						{/if}
+						<div class="rtext">
+							<div class="rnm">{item.title}</div>
+							<div class="rsub">{compactItemMeta(item)}</div>
+						</div>
+					</div>
+					<div class="rprice">{itemPriceLabel(item)}</div>
+				</div>
+				{#if itemIndex < items.length - 1}
+					<div class="rrow rseg">
+						<div class="rrail"></div>
+						<div>
+							<span class="rmode"
+								>{transportModeLabel(card.routeTransport)}
+								<b>{routeSegmentLabel(card, items[itemIndex + 1])}</b></span
+							>
+						</div>
+						<div></div>
+					</div>
+				{/if}
+			{/each}
+		</div>
+
+		<div class="badges">
+			{#each detailBadgeList(card) as badge, badgeIndex (badge)}
+				<span class={`badge ${resultBadgeClass(badgeIndex)}`}>{badge}</span>
+			{/each}
+		</div>
+
+		<button
+			class="cta"
+			type="button"
+			onclick={() =>
+				openExternalSheet(
+					card.id,
+					card.title,
+					cardReservationUrl(card),
+					`${formatKrw(card.estimatedCost)} · 실제 예약 페이지로 이동해서 바로 예약할 수 있어.`
+				)}>전체 코스 보기 ↗</button
+		>
+
+		<div class="fbbar" aria-label="추천 피드백">
+			<button
+				class={`fbtn good ${feedback?.sentiment === 'like' ? 'on' : ''}`}
+				type="button"
+				onclick={() => setFeedback(card.id, 'like')}>좋아</button
+			>
+			<button
+				class={`fbtn bad ${feedback?.sentiment === 'dislike' ? 'on' : ''}`}
+				type="button"
+				onclick={() => setFeedback(card.id, 'dislike')}>별로</button
+			>
+		</div>
+
+		{#if feedback?.sentiment}
+			<div class="reason-chips" aria-label="피드백 이유">
+				{#each feedback.sentiment === 'like' ? likeReasons : dislikeReasons as reason (reason)}
+					<button
+						class={feedback.reasons.includes(reason) ? 'active' : ''}
+						type="button"
+						onclick={() => toggleFeedbackReason(card.id, reason)}>{reason}</button
+					>
+				{/each}
+			</div>
+		{/if}
+	</article>
+{/snippet}
 
 {#snippet recommendationCoach(eyebrow: string, title: string, body: string, target: SpeechTarget)}
 	<div class="onboarding-coach recommendation-coach">
@@ -3333,6 +3587,35 @@
 					<button class="secondary" type="button" onclick={goHome}>홈</button>
 					<button class="primary" type="button" onclick={startRecommendation}>다시 추천</button>
 				</div>
+			</section>
+		{:else if screen === 'resultDetail'}
+			<section class="screen results-screen detail-screen">
+				<div class="detail-nav">
+					<button class="secondary small" type="button" onclick={backToResults}>목록</button>
+					<button class="secondary small" type="button" onclick={startRecommendation}
+						>다시 추천</button
+					>
+				</div>
+
+				<div class="hostdock compact">
+					<div class="mascot mascot-happy result-mascot">
+						<img src={saiSymbol} alt="사이" />
+					</div>
+					<div class="said">
+						<span class="nm">사이</span>
+						이 코스가 왜 맞는지랑 실제 이동 순서를 한 번에 정리했어.
+					</div>
+				</div>
+
+				{#if selectedRecommendation}
+					{@render recommendationDetail(selectedRecommendation)}
+				{:else}
+					<div class="rec empty-detail">
+						<div class="ttl">선택한 추천을 찾을 수 없어</div>
+						<button class="cta" type="button" onclick={backToResults}>추천 목록으로 돌아가기</button
+						>
+					</div>
+				{/if}
 			</section>
 		{/if}
 
@@ -4798,6 +5081,337 @@
 		font-size: 12px;
 		font-weight: 800;
 		margin-top: 10px;
+	}
+
+	.detail-screen {
+		gap: 12px;
+	}
+
+	.detail-nav {
+		display: grid;
+		grid-template-columns: auto auto;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.hostdock.compact {
+		align-items: center;
+	}
+
+	.hostdock.compact .result-mascot {
+		width: 62px;
+		height: 62px;
+	}
+
+	.rec {
+		display: grid;
+		overflow: hidden;
+		border: 1px solid rgba(236, 231, 243, 0.92);
+		border-radius: 20px;
+		background: var(--card);
+		color: var(--ink);
+		box-shadow: var(--soft);
+	}
+
+	.rec .top {
+		display: grid;
+		gap: 10px;
+		padding: 18px 18px 14px;
+	}
+
+	.rec .lab {
+		justify-self: start;
+		border-radius: 999px;
+		background: rgba(255, 107, 94, 0.12);
+		color: var(--coral);
+		padding: 7px 11px;
+		font-size: 12px;
+		font-weight: 900;
+	}
+
+	.rec .ttl {
+		color: var(--ink);
+		font-size: 21px;
+		font-weight: 900;
+		line-height: 1.2;
+		letter-spacing: 0;
+	}
+
+	.rec .why {
+		display: grid;
+		gap: 4px;
+		border-left: 4px solid var(--coral);
+		border-radius: 12px;
+		background: rgba(255, 107, 94, 0.08);
+		padding: 11px 12px;
+		color: var(--ink2);
+		font-size: 13px;
+		font-weight: 800;
+		line-height: 1.48;
+	}
+
+	.rec .why .k {
+		color: var(--coral);
+		font-size: 11px;
+		font-weight: 900;
+	}
+
+	.plan {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 7px;
+		padding: 0 18px 16px;
+	}
+
+	.stat {
+		display: grid;
+		gap: 5px;
+		min-width: 0;
+		min-height: 64px;
+		align-content: center;
+		border-radius: 14px;
+		background: #faf8fc;
+		padding: 9px 8px;
+	}
+
+	.stat .k {
+		color: var(--muted);
+		font-size: 11px;
+		font-weight: 900;
+		line-height: 1.1;
+	}
+
+	.stat .v {
+		overflow: hidden;
+		color: var(--ink);
+		font-size: clamp(11px, 3vw, 13px);
+		font-weight: 900;
+		line-height: 1.2;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.stat .amt {
+		background: var(--brand);
+		background-clip: text;
+		color: transparent;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.route {
+		display: grid;
+		padding: 0 18px 4px;
+	}
+
+	.rrow {
+		display: grid;
+		grid-template-columns: 20px minmax(0, 1fr) auto;
+		gap: 10px;
+		align-items: center;
+	}
+
+	.rstop {
+		min-height: 68px;
+	}
+
+	.rseg {
+		min-height: 34px;
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 800;
+	}
+
+	.rrail {
+		position: relative;
+		align-self: stretch;
+		display: grid;
+		place-items: center;
+	}
+
+	.rrail::before {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: 50%;
+		width: 2px;
+		border-radius: 999px;
+		background: #e9e1f2;
+		content: '';
+		transform: translateX(-50%);
+	}
+
+	.rrow:first-child .rrail::before {
+		top: 50%;
+	}
+
+	.rrow:last-child .rrail::before {
+		bottom: 50%;
+	}
+
+	.rdot {
+		position: relative;
+		z-index: 1;
+		width: 12px;
+		height: 12px;
+		border: 3px solid #fff;
+		border-radius: 999px;
+		background: var(--coral);
+		box-shadow: 0 0 0 2px rgba(255, 107, 94, 0.18);
+	}
+
+	.rdot.b {
+		background: var(--indigo);
+		box-shadow: 0 0 0 2px rgba(91, 108, 255, 0.18);
+	}
+
+	.rdot.w {
+		background: var(--violet);
+		box-shadow: 0 0 0 2px rgba(180, 94, 232, 0.18);
+	}
+
+	.rmid {
+		display: grid;
+		grid-template-columns: 48px minmax(0, 1fr);
+		gap: 10px;
+		align-items: center;
+		min-width: 0;
+	}
+
+	.rthumb {
+		display: grid;
+		place-items: center;
+		width: 48px;
+		height: 48px;
+		border-radius: 14px;
+		background:
+			linear-gradient(
+				135deg,
+				rgba(255, 107, 94, 0.94),
+				rgba(180, 94, 232, 0.9) 55%,
+				rgba(91, 108, 255, 0.94)
+			),
+			#f8f6fb;
+		color: #fff;
+		font-size: 14px;
+		font-weight: 900;
+		object-fit: cover;
+	}
+
+	.rthumb.tone-2 {
+		background: linear-gradient(135deg, #5b6cff, #6fcf97);
+	}
+
+	.rthumb.tone-3 {
+		background: linear-gradient(135deg, #ff6b5e, #f4b860);
+	}
+
+	.rthumb.tone-4 {
+		background: linear-gradient(135deg, #211c2b, #b45ee8);
+	}
+
+	.rtext {
+		min-width: 0;
+	}
+
+	.rnm {
+		overflow: hidden;
+		color: var(--ink);
+		font-size: 14px;
+		font-weight: 900;
+		line-height: 1.25;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.rsub {
+		overflow: hidden;
+		margin-top: 3px;
+		color: var(--muted);
+		font-size: 11px;
+		font-weight: 800;
+		line-height: 1.25;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.rprice {
+		justify-self: end;
+		color: var(--ink);
+		font-size: 12px;
+		font-weight: 900;
+		white-space: nowrap;
+	}
+
+	.rmode {
+		display: inline-flex;
+		max-width: 100%;
+		border-radius: 999px;
+		background: #f3eef9;
+		color: var(--muted);
+		padding: 6px 9px;
+		line-height: 1.2;
+	}
+
+	.rmode b {
+		overflow: hidden;
+		margin-left: 4px;
+		color: var(--ink2);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.badges {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 7px;
+		padding: 12px 18px 16px;
+	}
+
+	.badge.g,
+	.badge.a {
+		background: rgba(97, 176, 126, 0.13);
+		color: #28764e;
+	}
+
+	.cta {
+		min-height: 52px;
+		border: 0;
+		background: var(--brand);
+		color: #fff;
+		padding: 0 16px;
+		font-weight: 900;
+		cursor: pointer;
+	}
+
+	.fbbar {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 8px;
+		background: #f8f5fb;
+		padding: 8px 18px 10px;
+	}
+
+	.fbtn {
+		min-height: 44px;
+		border: 1px solid transparent;
+		border-radius: 14px;
+		background: #fff;
+		color: var(--ink2);
+		font-size: 13px;
+		font-weight: 900;
+		cursor: pointer;
+	}
+
+	.fbtn.good.on {
+		border-color: rgba(97, 176, 126, 0.45);
+		background: rgba(97, 176, 126, 0.12);
+		color: #28764e;
+	}
+
+	.fbtn.bad.on {
+		border-color: rgba(255, 107, 94, 0.45);
+		background: rgba(255, 107, 94, 0.12);
+		color: #b33d34;
 	}
 
 	.recommendation-detail {
