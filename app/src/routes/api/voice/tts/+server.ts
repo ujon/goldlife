@@ -30,8 +30,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (text.length > SUPERTONE_MAX_TEXT_LENGTH) {
 		return badRequest(`text must be ${SUPERTONE_MAX_TEXT_LENGTH} characters or fewer`);
 	}
-	if (!env.SUPERTONE_API_KEY)
-		return json({ error: 'SUPERTONE_API_KEY is not configured' }, { status: 503 });
+	const apiKey = env.SUPERTONE_API_KEY;
+	if (!apiKey) return json({ error: 'SUPERTONE_API_KEY is not configured' }, { status: 503 });
 
 	const baseUrl = env.SUPERTONE_BASE_URL || SUPERTONE_DEFAULT_BASE_URL;
 	const voiceId = env.SUPERTONE_VOICE_ID || SUPERTONE_DEFAULT_VOICE_ID;
@@ -59,7 +59,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const pending =
 			pendingTtsRequests.get(cacheKey) ??
-			fetchSupertoneTts({ baseUrl, voiceId, modelId, outputFormat, text });
+			fetchSupertoneTts({ apiKey, baseUrl, voiceId, modelId, outputFormat, text });
 		pendingTtsRequests.set(cacheKey, pending);
 
 		const entry = await pending;
@@ -77,12 +77,14 @@ export const POST: RequestHandler = async ({ request }) => {
 };
 
 async function fetchSupertoneTts({
+	apiKey,
 	baseUrl,
 	voiceId,
 	modelId,
 	outputFormat,
 	text
 }: {
+	apiKey: string;
 	baseUrl: string;
 	voiceId: string;
 	modelId: string;
@@ -94,7 +96,7 @@ async function fetchSupertoneTts({
 		method: 'POST',
 		headers: {
 			'content-type': 'application/json',
-			'x-sup-api-key': env.SUPERTONE_API_KEY
+			'x-sup-api-key': apiKey
 		},
 		body: JSON.stringify({
 			text,

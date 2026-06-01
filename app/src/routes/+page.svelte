@@ -53,10 +53,12 @@
 		lang: string;
 		interimResults: boolean;
 		maxAlternatives: number;
+		continuous?: boolean;
 		start: () => void;
 		stop: () => void;
+		abort?: () => void;
 		onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-		onerror: (() => void) | null;
+		onerror: ((event?: { error?: string }) => void) | null;
 		onend: (() => void) | null;
 	};
 	type WebSpeechRecognitionConstructor = new () => WebSpeechRecognition;
@@ -135,6 +137,9 @@
 	};
 	const MINUTE_MS = 60 * 1000;
 	const ONBOARDING_SILENCE_TIMEOUT_MS = 9000;
+	const SPEECH_RECOGNITION_RELEASE_DELAY_MS = 300;
+	const SPEECH_RECOGNITION_STOP_TIMEOUT_MS = 1200;
+	const SPEECH_RESTART_DELAY_MS = 180;
 	const spokenOnboardingQuestionIds: OnboardingQuestionId[] = [];
 	const mbtiOptions = [
 		'ISTJ',
@@ -345,10 +350,15 @@
 	let locationSearchTimer: ReturnType<typeof setTimeout> | null = null;
 	let locationSearchRequestId = 0;
 	let activeRecognition: WebSpeechRecognition | null = null;
+	let activeRecognitionStarted = false;
 	let onboardingSilenceTimer: ReturnType<typeof setTimeout> | null = null;
+	let speechStartTimer: ReturnType<typeof setTimeout> | null = null;
+	let recognitionReleasePromise: Promise<void> = Promise.resolve();
+	let speechStartRequestId = 0;
 	let saiSpeechRequestId = 0;
 	let activeSaiAudio: HTMLAudioElement | null = null;
 	let activeSaiAudioUrl = '';
+	let activeSaiUtterance: SpeechSynthesisUtterance | null = null;
 	// Plain (non-reactive) dedupe key so the per-screen voice effect speaks a line
 	// only once per screen entry. Seeded with 'auth' so the very first cold load
 	// (no user gesture yet -> autoplay blocked) does not fire a wasted TTS request.
@@ -575,7 +585,7 @@
 			playSaiScreenVoice(plan, { force: true });
 			return;
 		}
-		startSpeech(target);
+		void startSpeech(target);
 	}
 
 	function inputValue(event: Event) {
@@ -1140,13 +1150,13 @@
 			playSaiScreenVoice(onboardingIntroVoicePlan, { force: true });
 			return;
 		}
-		beginOnboardingVoice(onboardingQuestions[index]);
+		void beginOnboardingVoice(onboardingQuestions[index]);
 	}
 
 	function startOnboardingQuestions() {
 		onboardingIntroVisible = false;
 		resetOnboardingAnswerInput();
-		beginOnboardingVoice(currentOnboardingQuestion);
+		void beginOnboardingVoice(currentOnboardingQuestion);
 	}
 
 	function setSingleOnboardingAnswer(
@@ -2381,11 +2391,11 @@
 		}
 		saiSpeaking = false;
 		stopOnboardingAudio();
-		startSpeech('onboarding');
+		void startSpeech('onboarding');
 	}
 
 	function restartOnboardingVoice() {
-		beginOnboardingVoice(currentOnboardingQuestion, { readQuestion: false });
+		void beginOnboardingVoice(currentOnboardingQuestion, { readQuestion: false });
 	}
 
 	function stopSaiAudio() {
@@ -2404,12 +2414,18 @@
 			URL.revokeObjectURL(activeSaiAudioUrl);
 			activeSaiAudioUrl = '';
 		}
+		if (activeSaiUtterance) {
+			activeSaiUtterance.onend = null;
+			activeSaiUtterance.onerror = null;
+			activeSaiUtterance = null;
+			window.speechSynthesis.cancel();
+		}
 	}
 
 	async function runScreenVoice(plan: SaiScreenVoicePlan) {
 		if (!browser) return;
 
-		stopActiveRecognition();
+		const speechRelease = prepareForSaiPlayback();
 		stopSaiAudio();
 		saiSpeaking = true;
 		speechTranscript = '';
@@ -2426,9 +2442,12 @@
 
 			const blob = await response.blob();
 			if (speechRequestId !== saiSpeechRequestId) return;
+			await speechRelease;
+			if (speechRequestId !== saiSpeechRequestId) return;
 
 			activeSaiAudioUrl = URL.createObjectURL(blob);
 			const audio = new Audio(activeSaiAudioUrl);
+			audio.volume = 1;
 			activeSaiAudio = audio;
 
 			await new Promise<void>((resolvePlayback) => {
@@ -2442,17 +2461,13 @@
 				};
 				audio.onerror = () => {
 					if (activeSaiAudio === audio) {
-						stopSaiAudio();
-						saiSpeaking = false;
-						if (plan.listen) startSpeech(plan.listen);
+						void fallbackScreenVoice(plan, speechRequestId);
 					}
 					resolvePlayback();
 				};
 				void audio.play().catch(() => {
 					if (activeSaiAudio === audio) {
-						stopSaiAudio();
-						saiSpeaking = false;
-						if (plan.listen) startSpeech(plan.listen);
+						void fallbackScreenVoice(plan, speechRequestId);
 					}
 					resolvePlayback();
 				});
@@ -2460,11 +2475,66 @@
 		} catch (error) {
 			console.error(error);
 			if (speechRequestId === saiSpeechRequestId) {
-				stopSaiAudio();
-				saiSpeaking = false;
-				if (plan.listen) startSpeech(plan.listen);
+				await fallbackScreenVoice(plan, speechRequestId);
 			}
 		}
+	}
+
+	async function fallbackScreenVoice(plan: SaiScreenVoicePlan, speechRequestId: number) {
+		if (!browser || speechRequestId !== saiSpeechRequestId) return;
+		stopOnboardingAudio();
+		const spoken = await speakWithBrowserSpeech(plan.text, speechRequestId);
+		if (speechRequestId !== saiSpeechRequestId) return;
+		stopSaiAudio();
+		saiSpeaking = false;
+		if (plan.listen) startSpeech(plan.listen);
+		return spoken;
+	}
+
+	function speakWithBrowserSpeech(text: string, speechRequestId: number) {
+		if (!browser || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
+			return Promise.resolve(false);
+		}
+
+		return new Promise<boolean>((resolveSpoken) => {
+			const utterance = new SpeechSynthesisUtterance(text);
+			const timeout = setTimeout(
+				() => {
+					if (activeSaiUtterance === utterance) {
+						activeSaiUtterance = null;
+						window.speechSynthesis.cancel();
+					}
+					resolveSpoken(false);
+				},
+				Math.min(12000, Math.max(3500, text.length * 80))
+			);
+			utterance.lang = 'ko-KR';
+			utterance.volume = 1;
+			utterance.rate = 1;
+			utterance.pitch = 1;
+			activeSaiUtterance = utterance;
+
+			utterance.onend = () => {
+				clearTimeout(timeout);
+				if (activeSaiUtterance === utterance) activeSaiUtterance = null;
+				resolveSpoken(true);
+			};
+			utterance.onerror = () => {
+				clearTimeout(timeout);
+				if (activeSaiUtterance === utterance) activeSaiUtterance = null;
+				resolveSpoken(false);
+			};
+
+			if (speechRequestId !== saiSpeechRequestId) {
+				clearTimeout(timeout);
+				activeSaiUtterance = null;
+				resolveSpoken(false);
+				return;
+			}
+
+			window.speechSynthesis.cancel();
+			window.speechSynthesis.speak(utterance);
+		});
 	}
 
 	function showOnboardingTtsError() {
@@ -2480,7 +2550,7 @@
 	) {
 		if (!browser) return false;
 
-		stopActiveRecognition();
+		const speechRelease = prepareForSaiPlayback();
 		stopOnboardingAudio();
 		saiSpeaking = true;
 		speechTranscript = '';
@@ -2502,9 +2572,12 @@
 
 			const blob = await response.blob();
 			if (ttsRequestId !== saiSpeechRequestId) return true;
+			await speechRelease;
+			if (ttsRequestId !== saiSpeechRequestId) return true;
 
 			activeSaiAudioUrl = URL.createObjectURL(blob);
 			const audio = new Audio(activeSaiAudioUrl);
+			audio.volume = 1;
 			activeSaiAudio = audio;
 
 			return await new Promise<boolean>((resolveSpoken) => {
@@ -2561,16 +2634,64 @@
 		}, ONBOARDING_SILENCE_TIMEOUT_MS);
 	}
 
+	function waitForTimeout(ms: number) {
+		return new Promise<void>((resolveWait) => setTimeout(resolveWait, ms));
+	}
+
+	function waitForRecognitionStop(recognition: WebSpeechRecognition) {
+		return new Promise<void>((resolveStop) => {
+			const timeout = setTimeout(resolveStop, SPEECH_RECOGNITION_STOP_TIMEOUT_MS);
+			recognition.onend = () => {
+				clearTimeout(timeout);
+				resolveStop();
+			};
+		});
+	}
+
+	function markRecognitionReleaseDelay(recognition: WebSpeechRecognition | null) {
+		recognitionReleasePromise = (
+			recognition ? waitForRecognitionStop(recognition) : Promise.resolve()
+		).then(() => waitForTimeout(SPEECH_RECOGNITION_RELEASE_DELAY_MS));
+	}
+
+	async function prepareForSaiPlayback() {
+		stopActiveRecognition();
+		await recognitionReleasePromise;
+	}
+
+	function clearPendingSpeechStart() {
+		const hadPendingStart = Boolean(speechStartTimer);
+		if (speechStartTimer) {
+			clearTimeout(speechStartTimer);
+			speechStartTimer = null;
+		}
+		speechStartRequestId += 1;
+		return hadPendingStart;
+	}
+
 	function stopActiveRecognition() {
+		const hadListeningState = Boolean(listeningFor);
+		const hadPendingStart = clearPendingSpeechStart();
 		if (listeningFor === 'onboarding') clearOnboardingSilenceTimer();
 		if (!activeRecognition) {
 			listeningFor = null;
+			if (hadListeningState || hadPendingStart) markRecognitionReleaseDelay(null);
 			return;
 		}
 
 		const recognition = activeRecognition;
+		const shouldWaitForStop = activeRecognitionStarted;
 		activeRecognition = null;
-		recognition.stop();
+		activeRecognitionStarted = false;
+		recognition.onresult = null;
+		recognition.onerror = null;
+		markRecognitionReleaseDelay(shouldWaitForStop ? recognition : null);
+		try {
+			if (recognition.abort) recognition.abort();
+			else recognition.stop();
+		} catch {
+			// Some browsers throw if recognition is still starting or already ended.
+		}
 		listeningFor = null;
 	}
 
@@ -2584,8 +2705,14 @@
 	}
 
 	function startSpeech(target: SpeechTarget) {
-		const SpeechRecognition = getWebSpeechRecognitionCtor();
 		speechMessage = '';
+		stopActiveRecognition();
+		if (activeSaiAudio || activeSaiAudioUrl || saiSpeaking) {
+			stopSaiAudio();
+			saiSpeaking = false;
+		}
+
+		const SpeechRecognition = getWebSpeechRecognitionCtor();
 
 		if (!SpeechRecognition) {
 			speechMessage = '이 브라우저에서는 Web Speech API 음성 인식이 안 돼.';
@@ -2596,17 +2723,17 @@
 			return;
 		}
 
-		stopActiveRecognition();
 		const recognition = new SpeechRecognition();
 		activeRecognition = recognition;
+		activeRecognitionStarted = false;
 		listeningFor = target;
 		speechTranscript = '';
 		if (target === 'onboarding') {
 			onboardingVoicePaused = false;
 			onboardingSpeechStatus = '';
-			armOnboardingSilenceTimer();
 		}
 		recognition.lang = 'ko-KR';
+		recognition.continuous = false;
 		recognition.interimResults = true;
 		recognition.maxAlternatives = 1;
 		recognition.onresult = (event) => {
@@ -2627,16 +2754,24 @@
 				if (text) clearOnboardingSilenceTimer();
 			}
 		};
-		recognition.onerror = () => {
+		recognition.onerror = (event) => {
 			if (activeRecognition !== recognition) return;
-			speechMessage = '잘 못 들었어. 아래 선택지로 이어가줘.';
+			markRecognitionReleaseDelay(activeRecognitionStarted ? recognition : null);
+			speechMessage =
+				event?.error === 'not-allowed' || event?.error === 'service-not-allowed'
+					? '마이크 권한을 확인해줘.'
+					: '잘 못 들었어. 아래 선택지로 이어가줘.';
 			if (target === 'onboarding') {
 				clearOnboardingSilenceTimer();
 				onboardingVoicePaused = true;
-				onboardingSpeechStatus = '잘 못 들었어. 캐릭터를 누르면 다시 들을게.';
+				onboardingSpeechStatus =
+					event?.error === 'not-allowed' || event?.error === 'service-not-allowed'
+						? '마이크 권한을 확인해줘. 직접 입력하거나 권한 허용 뒤 다시 눌러줘.'
+						: '잘 못 들었어. 캐릭터를 누르면 다시 들을게.';
 			}
 			listeningFor = null;
 			activeRecognition = null;
+			activeRecognitionStarted = false;
 		};
 		recognition.onend = () => {
 			const naturalEnd = activeRecognition === recognition;
@@ -2650,21 +2785,37 @@
 				onboardingSpeechStatus = '잠깐 멈춰둘게. 캐릭터를 누르면 다시 들을게.';
 			}
 			if (naturalEnd) {
+				markRecognitionReleaseDelay(null);
 				listeningFor = null;
 				activeRecognition = null;
+				activeRecognitionStarted = false;
 			}
 		};
-		try {
-			recognition.start();
-		} catch {
-			if (target === 'onboarding') {
-				clearOnboardingSilenceTimer();
-				onboardingVoicePaused = true;
-				onboardingSpeechStatus = '지금은 마이크를 열 수 없어. 캐릭터를 누르면 다시 시도할게.';
+		const speechStartId = ++speechStartRequestId;
+		speechStartTimer = setTimeout(() => {
+			speechStartTimer = null;
+			if (
+				speechStartId !== speechStartRequestId ||
+				activeRecognition !== recognition ||
+				listeningFor !== target
+			) {
+				return;
 			}
-			listeningFor = null;
-			if (activeRecognition === recognition) activeRecognition = null;
-		}
+			try {
+				recognition.start();
+				activeRecognitionStarted = true;
+				if (target === 'onboarding') armOnboardingSilenceTimer();
+			} catch {
+				if (target === 'onboarding') {
+					clearOnboardingSilenceTimer();
+					onboardingVoicePaused = true;
+					onboardingSpeechStatus = '지금은 마이크를 열 수 없어. 캐릭터를 누르면 다시 시도할게.';
+				}
+				listeningFor = null;
+				if (activeRecognition === recognition) activeRecognition = null;
+				activeRecognitionStarted = false;
+			}
+		}, SPEECH_RESTART_DELAY_MS);
 	}
 
 	function getProgress(
