@@ -87,7 +87,6 @@
 		fallbackReason?: string;
 	};
 	type SaiScreenVoicePlan = {
-		key: string;
 		text: string;
 		listen: Exclude<SpeechTarget, 'onboarding'> | null;
 	};
@@ -141,7 +140,6 @@
 	const SPEECH_RECOGNITION_RELEASE_DELAY_MS = 300;
 	const SPEECH_RECOGNITION_STOP_TIMEOUT_MS = 1200;
 	const SPEECH_RESTART_DELAY_MS = 180;
-	const spokenOnboardingQuestionIds: OnboardingQuestionId[] = [];
 	const mbtiOptions = [
 		'ISTJ',
 		'ISFJ',
@@ -234,7 +232,7 @@
 		},
 		{
 			id: 'spendingStyle',
-			prompt: '돈 쓸 때 어떤 쪽이 편해?',
+			prompt: '돈을 어떤 식으로 사용하고 싶어?',
 			reaction: '예산 안에서 어디에 힘을 줄지 기억해둘게.',
 			options: [
 				{ id: 'value', label: '가성비', value: 'value' },
@@ -304,6 +302,12 @@
 			unknown: ['unknown', '몰라', '모르겠어', '모름', '잘몰라', '잘모르겠어', '잘 모르겠어']
 		}
 	};
+	const onboardingAnswerExamples: Partial<Record<OnboardingQuestionId, string>> = {
+		noveltyPreference: '예: 나는 항상 새로운걸 도전해',
+		spendingStyle: '예: 플렉스 하고 싶어',
+		riskTolerance: '예: 모험 가는거야!',
+		mobilityPreference: '예: 적당히 근처에서 놀고싶어.'
+	};
 
 	let screen = $state<Screen>('auth');
 	let phoneShellElement = $state<HTMLElement | undefined>();
@@ -361,11 +365,6 @@
 	let saiSpeechRequestId = 0;
 	let activeSaiAudio: HTMLAudioElement | null = null;
 	let activeSaiAudioUrl = '';
-	let activeSaiUtterance: SpeechSynthesisUtterance | null = null;
-	// Plain (non-reactive) dedupe key so the per-screen voice effect speaks a line
-	// only once per screen entry. Seeded with 'auth' so the very first cold load
-	// (no user gesture yet -> autoplay blocked) does not fire a wasted TTS request.
-	let lastVoicedKey = 'auth';
 
 	if (browser) {
 		void autoLoginInDevelopment();
@@ -416,7 +415,7 @@
 		currentOnboardingQuestion.id === 'mbtiType'
 			? '예: 나는 ENFP야 또는 잘 모르겠어'
 			: currentOnboardingQuestion
-				? `예: 나는 보통 캠핑 가`
+				? (onboardingAnswerExamples[currentOnboardingQuestion.id] ?? '예: 나는 보통 캠핑 가')
 				: ''
 	);
 	let onboardingAnswerHelp = $derived(
@@ -490,7 +489,6 @@
 	} as const;
 
 	const onboardingIntroVoicePlan = {
-		key: 'onboarding-intro',
 		text: `${onboardingIntroContent.title} ${onboardingIntroContent.body}`,
 		listen: null
 	} satisfies SaiScreenVoicePlan;
@@ -510,26 +508,23 @@
 	});
 
 	// What SAI should say (and whether to listen afterwards) on the current screen.
-	// `key` dedupes repeated entry; `listen` is the recognition target for screens that
-	// take a spoken answer. Returns null for screens SAI does not narrate.
+	// `listen` is the recognition target for screens that take a spoken answer.
+	// Returns null for screens SAI does not narrate.
 	let saiScreenVoice = $derived.by<SaiScreenVoicePlan | null>(() => {
 		switch (screen) {
 			case 'auth':
 				return {
-					key: 'auth',
 					text: '오늘 뭐하지? 시간과 돈 사이에서 지금 제일 괜찮은 선택지를 찾아줄게.',
 					listen: null
 				};
 			case 'location':
 				return {
-					key: 'location',
 					text: '지금 어디쯤 있어? 근처로 찾아볼게. 동네 이름으로 알려줘도 돼.',
 					listen: null
 				};
 			case 'home': {
 				const name = profile?.email.split('@')[0] ?? '';
 				return {
-					key: `home:${name}`,
 					text: `${name}야, 오늘 뭐하지? 지금 쓸 수 있는 시간과 총 예산만 알려줘.`,
 					listen: null
 				};
@@ -539,22 +534,20 @@
 			case 'budget':
 			case 'extra': {
 				const content = recommendationCoachContent[screen];
-				return { key: screen, text: `${content.title} ${content.body}`, listen: content.target };
+				return { text: `${content.title} ${content.body}`, listen: content.target };
 			}
 			case 'followup':
 				return {
-					key: `followup:${followupIndex}:${followupCoachContent.title}`,
 					text: `${followupCoachContent.title} ${followupCoachContent.body}`,
 					listen: 'followup'
 				};
 			case 'generating':
 				return {
-					key: 'generating',
 					text: 'AI 친구들이 잠깐 회의 중이야. 날씨, 지도, 맛집, 액티비티 후보를 시간과 예산 안에서 맞춰보고 있어.',
 					listen: null
 				};
 			case 'results':
-				return { key: 'results', text: '이 3개로 추렸어.', listen: null };
+				return { text: '이 3개로 추렸어.', listen: null };
 			default:
 				return null;
 		}
@@ -570,14 +563,11 @@
 			saiSpeaking = false;
 			return;
 		}
-		if (plan.key === lastVoicedKey) return;
 		playSaiScreenVoice(plan);
 	});
 
-	function playSaiScreenVoice(plan: SaiScreenVoicePlan, options: { force?: boolean } = {}) {
+	function playSaiScreenVoice(plan: SaiScreenVoicePlan) {
 		if (!browser) return;
-		if (!options.force && plan.key === lastVoicedKey) return;
-		lastVoicedKey = plan.key;
 		void runScreenVoice(plan);
 	}
 
@@ -585,7 +575,7 @@
 		if (target === 'onboarding') return;
 		const plan = saiScreenVoice;
 		if (plan?.listen === target) {
-			playSaiScreenVoice(plan, { force: true });
+			playSaiScreenVoice(plan);
 			return;
 		}
 		void startSpeech(target);
@@ -1150,7 +1140,7 @@
 		onboardingIntroVisible = index === 0 && !profile?.onboardingCompleted;
 		if (onboardingIntroVisible) {
 			stopOnboardingVoice();
-			playSaiScreenVoice(onboardingIntroVoicePlan, { force: true });
+			playSaiScreenVoice(onboardingIntroVoicePlan);
 			return;
 		}
 		void beginOnboardingVoice(onboardingQuestions[index]);
@@ -2386,15 +2376,11 @@
 		onboardingSpeechStatus = '';
 		const ttsRequestId = ++saiSpeechRequestId;
 
-		const shouldReadQuestion =
-			options.readQuestion ?? !spokenOnboardingQuestionIds.includes(question.id);
+		const shouldReadQuestion = options.readQuestion ?? true;
 		if (shouldReadQuestion) {
 			const supertoneSpoken = await speakOnboardingQuestionWithSupertone(question, ttsRequestId);
 			if (ttsRequestId !== saiSpeechRequestId) return;
 			if (supertoneSpoken) {
-				if (!spokenOnboardingQuestionIds.includes(question.id)) {
-					spokenOnboardingQuestionIds.push(question.id);
-				}
 				return;
 			}
 			showOnboardingTtsError();
@@ -2425,12 +2411,6 @@
 			URL.revokeObjectURL(activeSaiAudioUrl);
 			activeSaiAudioUrl = '';
 		}
-		if (activeSaiUtterance) {
-			activeSaiUtterance.onend = null;
-			activeSaiUtterance.onerror = null;
-			activeSaiUtterance = null;
-			window.speechSynthesis.cancel();
-		}
 	}
 
 	async function runScreenVoice(plan: SaiScreenVoicePlan) {
@@ -2446,6 +2426,7 @@
 		try {
 			const response = await fetch(resolve('/api/voice/tts'), {
 				method: 'POST',
+				cache: 'no-store',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ text: plan.text })
 			});
@@ -2472,13 +2453,13 @@
 				};
 				audio.onerror = () => {
 					if (activeSaiAudio === audio) {
-						void fallbackScreenVoice(plan, speechRequestId);
+						handleScreenTtsError(plan, speechRequestId);
 					}
 					resolvePlayback();
 				};
 				void audio.play().catch(() => {
 					if (activeSaiAudio === audio) {
-						void fallbackScreenVoice(plan, speechRequestId);
+						handleScreenTtsError(plan, speechRequestId);
 					}
 					resolvePlayback();
 				});
@@ -2486,66 +2467,17 @@
 		} catch (error) {
 			console.error(error);
 			if (speechRequestId === saiSpeechRequestId) {
-				await fallbackScreenVoice(plan, speechRequestId);
+				handleScreenTtsError(plan, speechRequestId);
 			}
 		}
 	}
 
-	async function fallbackScreenVoice(plan: SaiScreenVoicePlan, speechRequestId: number) {
+	function handleScreenTtsError(plan: SaiScreenVoicePlan, speechRequestId: number) {
 		if (!browser || speechRequestId !== saiSpeechRequestId) return;
 		stopOnboardingAudio();
-		const spoken = await speakWithBrowserSpeech(plan.text, speechRequestId);
-		if (speechRequestId !== saiSpeechRequestId) return;
-		stopSaiAudio();
 		saiSpeaking = false;
+		speechMessage = 'Supertone TTS 오류야. 설정이나 크레딧을 확인해줘.';
 		if (plan.listen) startSpeech(plan.listen);
-		return spoken;
-	}
-
-	function speakWithBrowserSpeech(text: string, speechRequestId: number) {
-		if (!browser || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
-			return Promise.resolve(false);
-		}
-
-		return new Promise<boolean>((resolveSpoken) => {
-			const utterance = new SpeechSynthesisUtterance(text);
-			const timeout = setTimeout(
-				() => {
-					if (activeSaiUtterance === utterance) {
-						activeSaiUtterance = null;
-						window.speechSynthesis.cancel();
-					}
-					resolveSpoken(false);
-				},
-				Math.min(12000, Math.max(3500, text.length * 80))
-			);
-			utterance.lang = 'ko-KR';
-			utterance.volume = 1;
-			utterance.rate = 1;
-			utterance.pitch = 1;
-			activeSaiUtterance = utterance;
-
-			utterance.onend = () => {
-				clearTimeout(timeout);
-				if (activeSaiUtterance === utterance) activeSaiUtterance = null;
-				resolveSpoken(true);
-			};
-			utterance.onerror = () => {
-				clearTimeout(timeout);
-				if (activeSaiUtterance === utterance) activeSaiUtterance = null;
-				resolveSpoken(false);
-			};
-
-			if (speechRequestId !== saiSpeechRequestId) {
-				clearTimeout(timeout);
-				activeSaiUtterance = null;
-				resolveSpoken(false);
-				return;
-			}
-
-			window.speechSynthesis.cancel();
-			window.speechSynthesis.speak(utterance);
-		});
 	}
 
 	function showOnboardingTtsError() {
@@ -2570,14 +2502,14 @@
 
 		const answerHint =
 			question.id === 'mbtiType' ? 'ENFP처럼 MBTI 유형 하나만 말하거나, 잘 모르겠다고 말해줘.' : '';
+		const ttsText = [question.prompt, answerHint].filter(Boolean).join(' ');
 
 		try {
 			const response = await fetch(resolve('/api/voice/tts'), {
 				method: 'POST',
+				cache: 'no-store',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					text: [question.prompt, answerHint].filter(Boolean).join(' ')
-				})
+				body: JSON.stringify({ text: ttsText })
 			});
 			if (!response.ok) throw new Error(`Supertone TTS ${response.status}`);
 

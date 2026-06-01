@@ -8,17 +8,25 @@ const SUPERTONE_DEFAULT_MODEL = 'sona_speech_2_flash';
 const SUPERTONE_DEFAULT_VOICE_ID = '7c56c6a6471a12816604f0';
 const SUPERTONE_DEFAULT_OUTPUT_FORMAT = 'mp3';
 const SUPERTONE_MAX_TEXT_LENGTH = 300;
-const SUPERTONE_TTS_CACHE_DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
-const SUPERTONE_TTS_CACHE_DEFAULT_MAX_ENTRIES = 100;
-
-type TtsCacheEntry = {
-	bytes: Uint8Array;
-	contentType: string;
-	expiresAt: number;
+const TTS_NO_CACHE_HEADERS = {
+	'cache-control': 'no-store, no-cache, max-age=0, must-revalidate',
+	expires: '0',
+	pragma: 'no-cache'
 };
 
-const ttsCache = new Map<string, TtsCacheEntry>();
-const pendingTtsRequests = new Map<string, Promise<TtsCacheEntry>>();
+type TtsAudio = {
+	bytes: Uint8Array;
+	contentType: string;
+};
+
+class SupertoneTtsError extends Error {
+	constructor(
+		readonly status: number,
+		detail: string
+	) {
+		super(`Supertone TTS failed: ${status} ${detail}`);
+	}
+}
 
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await readTtsRequestBody(request);
@@ -31,48 +39,40 @@ export const POST: RequestHandler = async ({ request }) => {
 		return badRequest(`text must be ${SUPERTONE_MAX_TEXT_LENGTH} characters or fewer`);
 	}
 	const apiKey = env.SUPERTONE_API_KEY;
-	if (!apiKey) return json({ error: 'SUPERTONE_API_KEY is not configured' }, { status: 503 });
+	if (!apiKey) {
+		return json(
+			{ error: 'SUPERTONE_API_KEY is not configured' },
+			{ status: 503, headers: TTS_NO_CACHE_HEADERS }
+		);
+	}
 
 	const baseUrl = env.SUPERTONE_BASE_URL || SUPERTONE_DEFAULT_BASE_URL;
 	const voiceId = env.SUPERTONE_VOICE_ID || SUPERTONE_DEFAULT_VOICE_ID;
 	const modelId = env.SUPERTONE_MODEL || SUPERTONE_DEFAULT_MODEL;
 	const outputFormat = env.SUPERTONE_OUTPUT_FORMAT || SUPERTONE_DEFAULT_OUTPUT_FORMAT;
-	const cacheKey = JSON.stringify({
-		baseUrl,
-		voiceId,
-		modelId,
-		outputFormat,
-		language: 'ko',
-		text
-	});
-
-	pruneExpiredTtsCache();
-
-	const cached = ttsCache.get(cacheKey);
-	if (cached && cached.expiresAt > Date.now()) {
-		ttsCache.delete(cacheKey);
-		ttsCache.set(cacheKey, cached);
-		return ttsAudioResponse(cached, 'HIT');
-	}
-	if (cached) ttsCache.delete(cacheKey);
 
 	try {
-		const pending =
-			pendingTtsRequests.get(cacheKey) ??
-			fetchSupertoneTts({ apiKey, baseUrl, voiceId, modelId, outputFormat, text });
-		pendingTtsRequests.set(cacheKey, pending);
-
-		const entry = await pending;
-		pendingTtsRequests.delete(cacheKey);
-
-		ttsCache.set(cacheKey, entry);
-		pruneTtsCache(SUPERTONE_TTS_CACHE_DEFAULT_MAX_ENTRIES);
-
-		return ttsAudioResponse(entry, 'MISS');
+		const audio = await fetchSupertoneTts({
+			apiKey,
+			baseUrl,
+			voiceId,
+			modelId,
+			outputFormat,
+			text
+		});
+		return ttsAudioResponse(audio);
 	} catch (error) {
-		pendingTtsRequests.delete(cacheKey);
 		console.error(error);
-		return json({ error: 'Supertone TTS failed' }, { status: 502 });
+		return json(
+			{
+				error: 'Supertone TTS failed',
+				status: error instanceof SupertoneTtsError ? error.status : undefined
+			},
+			{
+				status: error instanceof SupertoneTtsError ? error.status : 502,
+				headers: TTS_NO_CACHE_HEADERS
+			}
+		);
 	}
 };
 
@@ -108,39 +108,22 @@ async function fetchSupertoneTts({
 
 	if (!response.ok) {
 		const detail = await response.text().catch(() => '');
-		throw new Error(`Supertone TTS failed: ${response.status} ${detail}`);
+		throw new SupertoneTtsError(response.status, detail);
 	}
 
 	return {
 		bytes: new Uint8Array(await response.arrayBuffer()),
-		contentType: outputFormat === 'wav' ? 'audio/wav' : 'audio/mpeg',
-		expiresAt: Date.now() + SUPERTONE_TTS_CACHE_DEFAULT_TTL_SECONDS * 1000
+		contentType: outputFormat === 'wav' ? 'audio/wav' : 'audio/mpeg'
 	};
 }
 
-function ttsAudioResponse(entry: TtsCacheEntry, cacheStatus: 'HIT' | 'MISS') {
-	return new Response(entry.bytes.slice(), {
+function ttsAudioResponse(audio: TtsAudio) {
+	return new Response(audio.bytes.slice(), {
 		headers: {
-			'cache-control': 'no-store',
-			'content-type': entry.contentType,
-			'x-tts-cache': cacheStatus
+			'content-type': audio.contentType,
+			...TTS_NO_CACHE_HEADERS
 		}
 	});
-}
-
-function pruneExpiredTtsCache() {
-	const now = Date.now();
-	for (const [key, entry] of ttsCache) {
-		if (entry.expiresAt <= now) ttsCache.delete(key);
-	}
-}
-
-function pruneTtsCache(maxEntries: number) {
-	while (ttsCache.size > maxEntries) {
-		const oldestKey = ttsCache.keys().next().value;
-		if (!oldestKey) return;
-		ttsCache.delete(oldestKey);
-	}
 }
 
 async function readTtsRequestBody(request: Request) {
