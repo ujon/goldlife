@@ -373,8 +373,8 @@
 		void autoLoginInDevelopment();
 	}
 
-	// Single source of truth for the recommendation coach screens: the markup snippet
-	// and the spoken (TTS) line both read from here so the two never drift apart.
+	// Single source of truth for the recommendation coach screens.
+	// TTS intentionally reads only the title so narration finishes before STT starts.
 	const recommendationCoachContent = {
 		time: {
 			eyebrow: '추천 질문 1/4',
@@ -492,7 +492,7 @@
 	} as const;
 
 	const onboardingIntroVoicePlan = {
-		text: `${onboardingIntroContent.title} ${onboardingIntroContent.body}`,
+		text: onboardingIntroContent.title,
 		listen: null
 	} satisfies SaiScreenVoicePlan;
 
@@ -517,18 +517,18 @@
 		switch (screen) {
 			case 'auth':
 				return {
-					text: '오늘 뭐하지? 시간과 돈 사이에서 지금 제일 괜찮은 선택지를 찾아줄게.',
+					text: '오늘 뭐하지?',
 					listen: null
 				};
 			case 'location':
 				return {
-					text: '지금 어디쯤 있어? 근처로 찾아볼게. 동네 이름으로 알려줘도 돼.',
+					text: '지금 어디쯤 있어?',
 					listen: null
 				};
 			case 'home': {
 				const name = profile?.email.split('@')[0] ?? '';
 				return {
-					text: `${name}야, 오늘 뭐하지? 지금 쓸 수 있는 시간과 총 예산만 알려줘.`,
+					text: `${name}야, 오늘 뭐하지?`,
 					listen: null
 				};
 			}
@@ -537,16 +537,16 @@
 			case 'budget':
 			case 'extra': {
 				const content = recommendationCoachContent[screen];
-				return { text: `${content.title} ${content.body}`, listen: content.target };
+				return { text: content.title, listen: content.target };
 			}
 			case 'followup':
 				return {
-					text: `${followupCoachContent.title} ${followupCoachContent.body}`,
+					text: followupCoachContent.title,
 					listen: 'followup'
 				};
 			case 'generating':
 				return {
-					text: 'AI 친구들이 잠깐 회의 중이야. 날씨, 지도, 맛집, 액티비티 후보를 시간과 예산 안에서 맞춰보고 있어.',
+					text: 'AI 친구들이 잠깐 회의 중이야.',
 					listen: null
 				};
 			case 'results':
@@ -2576,9 +2576,7 @@
 		speechMessage = '';
 		onboardingSpeechStatus = '';
 
-		const answerHint =
-			question.id === 'mbtiType' ? 'ENFP처럼 MBTI 유형 하나만 말하거나, 잘 모르겠다고 말해줘.' : '';
-		const ttsText = [question.prompt, answerHint].filter(Boolean).join(' ');
+		const ttsText = question.prompt;
 
 		try {
 			const response = await fetch(resolve('/api/voice/tts'), {
