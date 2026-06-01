@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { resolve } from '$app/paths';
 	import saiSymbol from '$lib/assets/sai-symbol.svg';
+	import { tick } from 'svelte';
 	import { createSubscriber } from 'svelte/reactivity';
 	import type { CandidateBundle } from '$lib/sai/candidates';
 	import {
@@ -305,6 +306,8 @@
 	};
 
 	let screen = $state<Screen>('auth');
+	let phoneShellElement = $state<HTMLElement | undefined>();
+	let detailScreenElement = $state<HTMLElement | undefined>();
 	let authMode = $state<AuthMode>('login');
 	let authEmail = $state('');
 	let authPassword = $state('');
@@ -1779,11 +1782,19 @@
 		selectedRecommendationId = cardId;
 		recordClick(cardId);
 		screen = 'resultDetail';
+		void resetResultDetailScroll();
 	}
 
 	function backToResults() {
 		externalSheet = null;
 		screen = 'results';
+	}
+
+	async function resetResultDetailScroll() {
+		if (!browser) return;
+		await tick();
+		phoneShellElement?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+		detailScreenElement?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 	}
 
 	function externalProviderLabel(url: string) {
@@ -3228,7 +3239,7 @@
 {/snippet}
 
 <main class="app-frame">
-	<section class={`phone-shell state-${screen}`}>
+	<section class={`phone-shell state-${screen}`} bind:this={phoneShellElement}>
 		<header class="topbar">
 			{#if progress.total > 0}
 				<div
@@ -3713,7 +3724,7 @@
 				</div>
 			</section>
 		{:else if screen === 'resultDetail'}
-			<section class="screen results-screen detail-screen">
+			<section class="screen results-screen detail-screen" bind:this={detailScreenElement}>
 				<div class="detail-nav">
 					<button class="secondary small" type="button" onclick={backToResults}>목록</button>
 					<button class="secondary small" type="button" onclick={startRecommendation}
@@ -3843,6 +3854,10 @@
 		box-shadow:
 			0 24px 70px rgba(70, 58, 90, 0.18),
 			0 2px 8px rgba(70, 58, 90, 0.08);
+	}
+
+	.phone-shell.state-resultDetail {
+		overflow: hidden;
 	}
 
 	.topbar {
@@ -5216,6 +5231,13 @@
 
 	.detail-screen {
 		gap: 12px;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		padding-bottom: 20px;
+	}
+
+	.detail-screen > * {
+		flex-shrink: 0;
 	}
 
 	.detail-nav {
