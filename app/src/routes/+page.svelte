@@ -140,6 +140,7 @@
 	const SPEECH_RECOGNITION_RELEASE_DELAY_MS = 300;
 	const SPEECH_RECOGNITION_STOP_TIMEOUT_MS = 1200;
 	const SPEECH_RESTART_DELAY_MS = 180;
+	const TTS_TO_STT_GUARD_DELAY_MS = 850;
 	const mbtiOptions = [
 		'ISTJ',
 		'ISFJ',
@@ -363,6 +364,7 @@
 	let recognitionReleasePromise: Promise<void> = Promise.resolve();
 	let speechStartRequestId = 0;
 	let saiSpeechRequestId = 0;
+	let lastSaiScreenVoiceKey = '';
 	let activeSaiAudio: HTMLAudioElement | null = null;
 	let activeSaiAudioUrl = '';
 	let activeSaiUtterance: SpeechSynthesisUtterance | null = null;
@@ -557,19 +559,32 @@
 	// Speak the current screen's line via TTS whenever the screen (or its line) changes.
 	$effect(() => {
 		if (!browser) return;
-		if (screen === 'onboarding') return;
+		if (screen === 'onboarding') {
+			lastSaiScreenVoiceKey = '';
+			return;
+		}
 		const plan = saiScreenVoice;
 		if (!plan) {
+			lastSaiScreenVoiceKey = '';
 			stopSaiAudio();
 			saiSpeaking = false;
 			return;
 		}
+		const voiceKey = saiScreenVoiceKey(plan);
+		if (lastSaiScreenVoiceKey === voiceKey) return;
+		lastSaiScreenVoiceKey = voiceKey;
 		playSaiScreenVoice(plan);
 	});
 
+	function saiScreenVoiceKey(plan: SaiScreenVoicePlan) {
+		return `${screen}:${plan.listen ?? 'none'}:${plan.text}`;
+	}
+
 	function playSaiScreenVoice(plan: SaiScreenVoicePlan) {
 		if (!browser) return;
-		void runScreenVoice(plan);
+		queueMicrotask(() => {
+			void runScreenVoice(plan);
+		});
 	}
 
 	function replayRecommendationVoice(target: SpeechTarget) {
@@ -2452,9 +2467,9 @@
 			await new Promise<void>((resolvePlayback) => {
 				audio.onended = () => {
 					if (activeSaiAudio === audio) {
-						stopSaiAudio();
+						stopOnboardingAudio();
 						saiSpeaking = false;
-						if (plan.listen) startSpeech(plan.listen);
+						if (plan.listen) void startSpeechAfterPlayback(plan.listen, speechRequestId);
 					}
 					resolvePlayback();
 				};
@@ -2493,7 +2508,7 @@
 		if (speechRequestId !== saiSpeechRequestId) return;
 		stopOnboardingAudio();
 		saiSpeaking = false;
-		if (plan.listen) startSpeech(plan.listen);
+		if (plan.listen) await startSpeechAfterPlayback(plan.listen, speechRequestId);
 		return spoken;
 	}
 
@@ -2589,7 +2604,9 @@
 					if (activeSaiAudio === audio) {
 						stopOnboardingAudio();
 						saiSpeaking = false;
-						if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
+						if (screen === 'onboarding' && !onboardingVoicePaused) {
+							void startSpeechAfterPlayback('onboarding', ttsRequestId);
+						}
 					}
 					resolveSpoken(true);
 				};
@@ -2625,7 +2642,9 @@
 		if (ttsRequestId !== saiSpeechRequestId) return false;
 		stopOnboardingAudio();
 		saiSpeaking = false;
-		if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
+		if (screen === 'onboarding' && !onboardingVoicePaused) {
+			await startSpeechAfterPlayback('onboarding', ttsRequestId);
+		}
 		return true;
 	}
 
@@ -2651,6 +2670,13 @@
 
 	function waitForTimeout(ms: number) {
 		return new Promise<void>((resolveWait) => setTimeout(resolveWait, ms));
+	}
+
+	async function startSpeechAfterPlayback(target: SpeechTarget, speechRequestId: number) {
+		await waitForTimeout(TTS_TO_STT_GUARD_DELAY_MS);
+		if (speechRequestId !== saiSpeechRequestId) return;
+		if (target === 'onboarding' && (screen !== 'onboarding' || onboardingVoicePaused)) return;
+		startSpeech(target);
 	}
 
 	function waitForRecognitionStop(recognition: WebSpeechRecognition) {
