@@ -365,6 +365,7 @@
 	let saiSpeechRequestId = 0;
 	let activeSaiAudio: HTMLAudioElement | null = null;
 	let activeSaiAudioUrl = '';
+	let activeSaiUtterance: SpeechSynthesisUtterance | null = null;
 
 	if (browser) {
 		void autoLoginInDevelopment();
@@ -2411,6 +2412,12 @@
 			URL.revokeObjectURL(activeSaiAudioUrl);
 			activeSaiAudioUrl = '';
 		}
+		if (activeSaiUtterance) {
+			activeSaiUtterance.onend = null;
+			activeSaiUtterance.onerror = null;
+			activeSaiUtterance = null;
+			window.speechSynthesis.cancel();
+		}
 	}
 
 	async function runScreenVoice(plan: SaiScreenVoicePlan) {
@@ -2453,13 +2460,13 @@
 				};
 				audio.onerror = () => {
 					if (activeSaiAudio === audio) {
-						handleScreenTtsError(plan, speechRequestId);
+						void fallbackScreenVoice(plan, speechRequestId, speechRelease);
 					}
 					resolvePlayback();
 				};
 				void audio.play().catch(() => {
 					if (activeSaiAudio === audio) {
-						handleScreenTtsError(plan, speechRequestId);
+						void fallbackScreenVoice(plan, speechRequestId, speechRelease);
 					}
 					resolvePlayback();
 				});
@@ -2467,17 +2474,71 @@
 		} catch (error) {
 			console.error(error);
 			if (speechRequestId === saiSpeechRequestId) {
-				handleScreenTtsError(plan, speechRequestId);
+				await fallbackScreenVoice(plan, speechRequestId, speechRelease);
 			}
 		}
 	}
 
-	function handleScreenTtsError(plan: SaiScreenVoicePlan, speechRequestId: number) {
+	async function fallbackScreenVoice(
+		plan: SaiScreenVoicePlan,
+		speechRequestId: number,
+		speechRelease: Promise<void> = Promise.resolve()
+	) {
 		if (!browser || speechRequestId !== saiSpeechRequestId) return;
+		await speechRelease;
+		if (speechRequestId !== saiSpeechRequestId) return;
+		stopOnboardingAudio();
+		speechMessage = 'Supertone TTS 오류야. 설정이나 크레딧을 확인해줘.';
+		const spoken = await speakWithBrowserSpeech(plan.text, speechRequestId);
+		if (speechRequestId !== saiSpeechRequestId) return;
 		stopOnboardingAudio();
 		saiSpeaking = false;
-		speechMessage = 'Supertone TTS 오류야. 설정이나 크레딧을 확인해줘.';
 		if (plan.listen) startSpeech(plan.listen);
+		return spoken;
+	}
+
+	function speakWithBrowserSpeech(text: string, speechRequestId: number) {
+		if (!browser || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
+			return Promise.resolve(false);
+		}
+
+		return new Promise<boolean>((resolveSpoken) => {
+			let settled = false;
+			const finish = (spoken: boolean) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				if (activeSaiUtterance === utterance) activeSaiUtterance = null;
+				resolveSpoken(spoken);
+			};
+			const utterance = new SpeechSynthesisUtterance(text);
+			const timeout = setTimeout(
+				() => {
+					if (activeSaiUtterance === utterance) {
+						activeSaiUtterance = null;
+						window.speechSynthesis.cancel();
+					}
+					finish(false);
+				},
+				Math.min(12000, Math.max(3500, text.length * 80))
+			);
+			utterance.lang = 'ko-KR';
+			utterance.volume = 1;
+			utterance.rate = 1;
+			utterance.pitch = 1;
+			activeSaiUtterance = utterance;
+
+			utterance.onend = () => finish(true);
+			utterance.onerror = () => finish(false);
+
+			if (speechRequestId !== saiSpeechRequestId) {
+				finish(false);
+				return;
+			}
+
+			window.speechSynthesis.cancel();
+			window.speechSynthesis.speak(utterance);
+		});
 	}
 
 	function showOnboardingTtsError() {
@@ -2534,15 +2595,15 @@
 				};
 				audio.onerror = () => {
 					if (activeSaiAudio === audio) {
-						stopOnboardingAudio();
-						showOnboardingTtsError();
+						void fallbackOnboardingQuestionVoice(ttsText, ttsRequestId).then(resolveSpoken);
+						return;
 					}
 					resolveSpoken(false);
 				};
 				void audio.play().catch(() => {
 					if (activeSaiAudio === audio) {
-						stopOnboardingAudio();
-						showOnboardingTtsError();
+						void fallbackOnboardingQuestionVoice(ttsText, ttsRequestId).then(resolveSpoken);
+						return;
 					}
 					resolveSpoken(false);
 				});
@@ -2550,11 +2611,22 @@
 		} catch (error) {
 			console.error(error);
 			if (ttsRequestId === saiSpeechRequestId) {
-				stopOnboardingAudio();
-				showOnboardingTtsError();
+				return fallbackOnboardingQuestionVoice(ttsText, ttsRequestId);
 			}
 			return false;
 		}
+	}
+
+	async function fallbackOnboardingQuestionVoice(text: string, ttsRequestId: number) {
+		if (!browser || ttsRequestId !== saiSpeechRequestId) return false;
+		stopOnboardingAudio();
+		onboardingSpeechStatus = 'Supertone TTS 오류야. 기본 음성으로 읽어볼게.';
+		await speakWithBrowserSpeech(text, ttsRequestId);
+		if (ttsRequestId !== saiSpeechRequestId) return false;
+		stopOnboardingAudio();
+		saiSpeaking = false;
+		if (screen === 'onboarding' && !onboardingVoicePaused) startSpeech('onboarding');
+		return true;
 	}
 
 	function clearOnboardingSilenceTimer() {
